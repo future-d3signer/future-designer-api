@@ -1,227 +1,295 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from vllm import LLM, SamplingParams
 import uvicorn
-from typing import Optional
+from typing import Dict
 import base64
 import json
 import torch
 import gc
+from contextlib import contextmanager
 from segmentation import get_segementaion, load_sam_model
 import io
 from groundingdino.util.inference import load_model
 from diffusers import MarigoldDepthPipeline
 from PIL import Image
+import logging
+from enum import Enum
+import numpy as np
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Multimodal vLLM API Server")
+class FurnitureType(str, Enum):
+    BED = "bed"
+    CHAIR = "chair"
+    TABLE = "table"
+    SOFA = "sofa"
 
-llm = None
-sam = None
-dino = None
-depth = None
-
-def get_llm():
-    global llm
-    if llm is None:
-        llm = LLM(
-            model="Qwen/Qwen2-VL-2B-Instruct",
-            dtype=torch.bfloat16,
-            gpu_memory_utilization=0.80, 
-            max_model_len=4096,
-            max_num_seqs=5,
-        )
-    return llm
-
-def get_sam():
-    global sam
-    if sam is None:
-        sam = load_sam_model()
-    return sam
-
-def get_dino():
-    global dino
-    if dino is None:
-        dino = load_model("/home/s464915/future-designer/experiments/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py", "/home/s464915/future-designer/experiments/GroundingDINO/weights/groundingdino_swint_ogc.pth")
-    return dino
-
-def get_depth():
-    global depth
-    if depth is None:
-        depth = MarigoldDepthPipeline.from_pretrained(
-            "prs-eth/marigold-depth-lcm-v1-0", torch_dtype=torch.float16, variant="fp16").to("cuda")
-    return depth
+class FurnitureDescription(BaseModel):
+    type: FurnitureType
+    style: str
+    color: str
+    material: str
+    shape: str
+    details: str
+    room_type: str
+    price_range: str
 
 class MultimodalRequest(BaseModel):
-    image_base64: Optional[str] = None
+    image_base64: str = Field(..., description="Base64 encoded image data")
 
 class DepthRequest(BaseModel):
-    image_base64: Optional[str] = None
+    image_base64: str = Field(..., description="Base64 encoded image data")
 
 class GenerationResponse(BaseModel):
-    text: dict
+    text: Dict[str, FurnitureDescription]
 
 class DepthResponse(BaseModel):
     image_final_base64: str
 
-def convert_string_to_json(input_string: str) -> dict:
-    try:
-        if input_string.startswith("```json\n"):
-            json_string = input_string.split("```json\n")[1].split("```")[0]
-        else:
-            json_string = input_string.replace('\n', '')
-        return json.loads(json_string)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"JSON parsing error: {str(e)}")
-    
-def encode_image(image):
-    buffered = io.BytesIO()
-    image.save(buffered, format="JPEG")
-    image_bytes = buffered.getvalue()
-    return base64.b64encode(image_bytes).decode("utf-8")
+class ModelManager:
+    def __init__(self):
+        self._llm = None
+        self._sam = None
+        self._dino = None
+        self._depth = None
 
-def decode_image(image_base64):
-    image_bytes = base64.b64decode(image_base64)
-    return Image.open(io.BytesIO(image_bytes))
+    @property
+    def llm(self):
+        if self._llm is None:
+            logger.info("Initializing LLM model")
+            self._llm = LLM(
+                model="Qwen/Qwen2-VL-2B-Instruct",
+                dtype=torch.bfloat16,
+                gpu_memory_utilization=0.80,
+                max_model_len=4096,
+                max_num_seqs=5,
+            )
+        return self._llm
 
-@app.post("/generate_depth", response_model=DepthResponse)
-async def generate_depth(request: DepthRequest):
-    try:
-        if request.image_base64 is None:
-            raise HTTPException(status_code=400, detail="Image base64 data is required.")
-        
-        generator = torch.Generator(device="cuda").manual_seed(2024)
-        image = decode_image(request.image_base64)
-        depth = get_depth()
+    @property
+    def sam(self):
+        if self._sam is None:
+            logger.info("Initializing SAM model")
+            self._sam = load_sam_model()
+        return self._sam
 
-        depth_image = depth(image, generator=generator).prediction
-        depth_image = depth.image_processor.visualize_depth(depth_image, color_map="binary")
-        depth_image = encode_image(depth_image)
+    @property
+    def dino(self):
+        if self._dino is None:
+            logger.info("Initializing DINO model")
+            self._dino = load_model(
+                "/home/s464915/future-designer/experiments/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py",
+                "/home/s464915/future-designer/experiments/GroundingDINO/weights/groundingdino_swint_ogc.pth"
+            )
+        return self._dino
 
+    @property
+    def depth(self):
+        if self._depth is None:
+            logger.info("Initializing Depth model")
+            self._depth = MarigoldDepthPipeline.from_pretrained(
+                "prs-eth/marigold-depth-lcm-v1-0",
+                torch_dtype=torch.float16,
+                variant="fp16"
+            ).to("cuda")
+        return self._depth
+
+    def cleanup(self):
+        logger.info("Cleaning up models")
+        for model_name in ['_llm', '_sam', '_dino', '_depth']:
+            if hasattr(self, model_name) and getattr(self, model_name) is not None:
+                delattr(self, model_name)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
 
-        return DepthResponse(image_final_base64=depth_image)
-    
-    except Exception as e:
+class ImageUtils:
+    @staticmethod
+    def encode_image(image: Image.Image) -> str:
+        buffered = io.BytesIO()
+        # Handle both PIL Image and numpy array inputs
+        if isinstance(image, (list, np.ndarray)):
+            # Convert numpy array to PIL Image
+            image = Image.fromarray(np.uint8(image))
+        image.save(buffered, format="JPEG")
+        return base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+    @staticmethod
+    def decode_image(image_base64: str) -> Image.Image:
+        try:
+            image_bytes = base64.b64decode(image_base64)
+            return Image.open(io.BytesIO(image_bytes))
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid image data: {str(e)}"
+            )
+
+@contextmanager
+def cuda_memory_manager():
+    try:
+        yield
+    finally:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
-        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/generate_captions", response_model=GenerationResponse)
-async def generate_response(request: MultimodalRequest):
-    try:
-        if request.image_base64 is None:
-            raise HTTPException(status_code=400, detail="Image base64 data is required.")
-        
-        image = decode_image(request.image_base64)
+app = FastAPI(
+    title="Multimodal vLLM API Server",
+    description="API for furniture analysis and depth estimation",
+    version="1.0.0"
+)
 
-        model = get_llm()
-        sam_model = get_sam()
-        dino_model = get_dino()
+model_manager = ModelManager()
 
-        masks = get_segementaion(image, sam_model, dino_model)
-
-        sampling_params = SamplingParams(
-            max_tokens=128,
-            temperature=0.0
-        )
-
-        output_dict = {}
-
-        for i in range(0, len(masks)):
-            image_base64 = encode_image(masks[i])
-
-            conversation = [
+def get_conversation_template(image_base64: str) -> list:
+    return [
+        {
+            "role": "system",
+            "content": """You are a furniture expert. Analyze images and provide descriptions in this exact JSON structure:
+                            {
+                                "type": "<must be one of: bed, chair, table, sofa>",
+                                "style": "<describe overall style>",
+                                "color": "<describe main color>",
+                                "material": "<describe primary material>",
+                                "shape": "<describe general shape>",
+                                "details": "<describe one decorative feature>",
+                                "room_type": "<specify room type>",
+                                "price_range": "<specify price range>"
+                            }
+                        Focus on maintaining this exact structure while providing relevant descriptions."""
+        },
+        {
+            "role": "assistant",
+            "content": "I will analyze the image and respond with a valid JSON object following the exact schema."
+        },
+        {
+            "role": "user",
+            "content": [
                 {
-                    "role": "system",
-                    "content": """You are a furniture expert. Analyze images and provide descriptions in this exact JSON format:
-                    {
-                        "type": "bed, chair, table, sofa",
-                        "style": "overall style",
-                        "color": "main color",
-                        "material": "primary material",
-                        "shape": "general shape",
-                        "details": "one decorative feature",
-                        "room_type": "room type",
-                        "price_range": "price range in one word"
-                    }
-                    Only use the specified furniture types. Keep descriptions concise and factual."""
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
                 },
                 {
-                    "role": "assistant",
-                    "content": "I will analyze the image and respond with a valid JSON object following the exact schema."
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
-                        },
-                        {
-                            "type": "text",
-                            "text": "Describe this furniture piece in JSON format."
-                        }
-                    ]
+                    "type": "text",
+                    "text": "Describe this furniture piece in JSON format."
                 }
             ]
+        }
+    ]
 
-            # Generate response
-            output = model.chat(conversation, sampling_params=sampling_params)
-            generated_text = output[0].outputs[0].text
-            caption = convert_string_to_json(generated_text)
+def parse_json_response(response_text: str) -> dict:
+    try:
+        if response_text.startswith("```json\n"):
+            json_string = response_text.split("```json\n")[1].split("```")[0]
+        else:
+            json_string = response_text.replace('\n', '')
+        return json.loads(json_string)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to parse model response: {str(e)}"
+        )
 
-            output_dict[f"furniture_{i}"] = caption
+@app.post(
+    "/generate_depth",
+    response_model=DepthResponse,
+    description="Generate depth map from input image"
+)
+async def generate_depth(request: DepthRequest):
+    with cuda_memory_manager():
+        try:
+            image = ImageUtils.decode_image(request.image_base64)
+            generator = torch.Generator(device="cuda").manual_seed(2024)
+            
+            # Generate depth map
+            depth_output = model_manager.depth(
+                image,
+                generator=generator
+            )
+            
+            # Convert depth prediction to visualization
+            depth_image = model_manager.depth.image_processor.visualize_depth(
+                depth_output.prediction,
+                color_map="binary"
+            )
+            # Convert visualization to base64
+            depth_base64 = ImageUtils.encode_image(depth_image[0])
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+            return DepthResponse(image_final_base64=depth_base64)
+            
+        except Exception as e:
+            logger.error(f"Depth generation error: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Depth generation failed: {str(e)}"
+            )
 
-        return GenerationResponse(text=output_dict)
-    
-    except Exception as e:
-        # Clear memory on error too
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post(
+    "/generate_captions",
+    response_model=GenerationResponse,
+    description="Generate furniture descriptions from input image"
+)
+async def generate_response(request: MultimodalRequest):
+    with cuda_memory_manager():
+        try:
+            image = ImageUtils.decode_image(request.image_base64)
+            masks = get_segementaion(
+                image,
+                model_manager.sam,
+                model_manager.dino
+            )
+
+            sampling_params = SamplingParams(
+                max_tokens=128,
+                temperature=0.0
+            )
+
+            output_dict = {}
+            for i, mask in enumerate(masks):
+                image_base64 = ImageUtils.encode_image(mask)
+                conversation = get_conversation_template(image_base64)
+                
+                output = model_manager.llm.chat(
+                    conversation,
+                    sampling_params=sampling_params
+                )
+                generated_text = output[0].outputs[0].text
+                caption = parse_json_response(generated_text)
+                
+                output_dict[f"furniture_{i}"] = caption
+
+            return GenerationResponse(text=output_dict)
+
+        except Exception as e:
+            logger.error(f"Caption generation error: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Caption generation failed: {str(e)}"
+            )
 
 @app.on_event("startup")
 async def startup_event():
-    get_llm()
-    get_sam()
-    get_dino()
-    get_depth()
+    logger.info("Initializing models...")
+    # Warm up models
+    _ = model_manager.llm
+    _ = model_manager.sam
+    _ = model_manager.dino
+    _ = model_manager.depth
+    logger.info("Server startup complete")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global llm
-    global sam
-    global dino
-    global depth
-    if llm is not None:
-        del llm
-        llm = None
-    if sam is not None:
-        del sam
-        sam = None
-    if dino is not None:
-        del dino
-        dino = None
-    if depth is not None:
-        del depth
-        depth = None
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    gc.collect()
+    logger.info("Shutting down server...")
+    model_manager.cleanup()
 
 if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
         port=8000,
-        reload=False  # Changed to False to prevent memory issues with reloader
+        reload=False
     )
