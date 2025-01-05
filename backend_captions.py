@@ -1,23 +1,20 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from vllm import LLM, SamplingParams
-import uvicorn
-from typing import Dict
-import base64
-import json
-import torch
 import gc
-from contextlib import contextmanager
-from segmentation import get_segementaion, load_sam_model
-import io
-from groundingdino.util.inference import load_model
-from diffusers import MarigoldDepthPipeline
-from PIL import Image
+import torch
+import uvicorn
 import logging
-from enum import Enum
-import numpy as np
 
-# Configure logging
+from enum import Enum
+from typing import Dict
+from vllm import LLM, SamplingParams
+from contextlib import contextmanager
+from pydantic import BaseModel, Field
+from utils import ImageUtils, CaptionUtils
+from fastapi import FastAPI, HTTPException
+from diffusers import MarigoldDepthPipeline
+from groundingdino.util.inference import load_model
+from segmentation import get_segementaion, load_sam_model
+
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -37,17 +34,17 @@ class FurnitureDescription(BaseModel):
     room_type: str
     price_range: str
 
-class MultimodalRequest(BaseModel):
-    image_base64: str = Field(..., description="Base64 encoded image data")
+class CaptionRequest(BaseModel):
+    source_image: str = Field(..., description="Base64 encoded image data")
 
 class DepthRequest(BaseModel):
-    image_base64: str = Field(..., description="Base64 encoded image data")
+    source_image: str = Field(..., description="Base64 encoded image data")
 
-class GenerationResponse(BaseModel):
-    text: Dict[str, FurnitureDescription]
+class CaptionResponse(BaseModel):
+    caption: Dict[str, FurnitureDescription]
 
 class DepthResponse(BaseModel):
-    image_final_base64: str
+    depth_image: str
 
 class ModelManager:
     def __init__(self):
@@ -106,28 +103,6 @@ class ModelManager:
             torch.cuda.empty_cache()
         gc.collect()
 
-class ImageUtils:
-    @staticmethod
-    def encode_image(image: Image.Image) -> str:
-        buffered = io.BytesIO()
-        # Handle both PIL Image and numpy array inputs
-        if isinstance(image, (list, np.ndarray)):
-            # Convert numpy array to PIL Image
-            image = Image.fromarray(np.uint8(image))
-        image.save(buffered, format="JPEG")
-        return base64.b64encode(buffered.getvalue()).decode("utf-8")
-
-    @staticmethod
-    def decode_image(image_base64: str) -> Image.Image:
-        try:
-            image_bytes = base64.b64decode(image_base64)
-            return Image.open(io.BytesIO(image_bytes))
-        except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid image data: {str(e)}"
-            )
-
 @contextmanager
 def cuda_memory_manager():
     try:
@@ -145,55 +120,6 @@ app = FastAPI(
 
 model_manager = ModelManager()
 
-def get_conversation_template(image_base64: str) -> list:
-    return [
-        {
-            "role": "system",
-            "content": """You are a furniture expert. Analyze images and provide descriptions in this exact JSON structure:
-                            {
-                                "type": "<must be one of: bed, chair, table, sofa>",
-                                "style": "<describe overall style>",
-                                "color": "<describe main color>",
-                                "material": "<describe primary material>",
-                                "shape": "<describe general shape>",
-                                "details": "<describe one decorative feature>",
-                                "room_type": "<specify room type>",
-                                "price_range": "<specify price range>"
-                            }
-                        Focus on maintaining this exact structure while providing relevant descriptions."""
-        },
-        {
-            "role": "assistant",
-            "content": "I will analyze the image and respond with a valid JSON object following the exact schema."
-        },
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
-                },
-                {
-                    "type": "text",
-                    "text": "Describe this furniture piece in JSON format."
-                }
-            ]
-        }
-    ]
-
-def parse_json_response(response_text: str) -> dict:
-    try:
-        if response_text.startswith("```json\n"):
-            json_string = response_text.split("```json\n")[1].split("```")[0]
-        else:
-            json_string = response_text.replace('\n', '')
-        return json.loads(json_string)
-    except json.JSONDecodeError as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to parse model response: {str(e)}"
-        )
-
 @app.post(
     "/generate_depth",
     response_model=DepthResponse,
@@ -202,7 +128,7 @@ def parse_json_response(response_text: str) -> dict:
 async def generate_depth(request: DepthRequest):
     with cuda_memory_manager():
         try:
-            image = ImageUtils.decode_image(request.image_base64)
+            image = ImageUtils.decode_image(request.source_image)
             generator = torch.Generator(device="cuda").manual_seed(2024)
             
             # Generate depth map
@@ -219,7 +145,7 @@ async def generate_depth(request: DepthRequest):
             # Convert visualization to base64
             depth_base64 = ImageUtils.encode_image(depth_image[0])
 
-            return DepthResponse(image_final_base64=depth_base64)
+            return DepthResponse(depth_image=depth_base64)
             
         except Exception as e:
             logger.error(f"Depth generation error: {str(e)}")
@@ -230,13 +156,13 @@ async def generate_depth(request: DepthRequest):
 
 @app.post(
     "/generate_captions",
-    response_model=GenerationResponse,
+    response_model=CaptionResponse,
     description="Generate furniture descriptions from input image"
 )
-async def generate_response(request: MultimodalRequest):
+async def generate_response(request: CaptionRequest):
     with cuda_memory_manager():
         try:
-            image = ImageUtils.decode_image(request.image_base64)
+            image = ImageUtils.decode_image(request.source_image)
             masks = get_segementaion(
                 image,
                 model_manager.sam,
@@ -251,18 +177,18 @@ async def generate_response(request: MultimodalRequest):
             output_dict = {}
             for i, mask in enumerate(masks):
                 image_base64 = ImageUtils.encode_image(mask)
-                conversation = get_conversation_template(image_base64)
+                conversation = CaptionUtils.get_conversation_template(image_base64)
                 
                 output = model_manager.llm.chat(
                     conversation,
                     sampling_params=sampling_params
                 )
                 generated_text = output[0].outputs[0].text
-                caption = parse_json_response(generated_text)
+                caption = CaptionUtils.parse_json_response(generated_text)
                 
                 output_dict[f"furniture_{i}"] = caption
 
-            return GenerationResponse(text=output_dict)
+            return CaptionResponse(caption=output_dict)
 
         except Exception as e:
             logger.error(f"Caption generation error: {str(e)}")
