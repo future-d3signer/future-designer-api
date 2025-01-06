@@ -10,7 +10,6 @@ from contextlib import contextmanager
 from pydantic import BaseModel, Field
 from utils import ImageUtils, CaptionUtils
 from fastapi import FastAPI, HTTPException
-from diffusers import MarigoldDepthPipeline
 from groundingdino.util.inference import load_model
 from segmentation import get_segementaion, load_sam_model
 
@@ -37,21 +36,14 @@ class FurnitureDescription(BaseModel):
 class CaptionRequest(BaseModel):
     source_image: str = Field(..., description="Base64 encoded image data")
 
-class DepthRequest(BaseModel):
-    source_image: str = Field(..., description="Base64 encoded image data")
-
 class CaptionResponse(BaseModel):
     caption: Dict[str, FurnitureDescription]
-
-class DepthResponse(BaseModel):
-    depth_image: str
 
 class ModelManager:
     def __init__(self):
         self._llm = None
         self._sam = None
         self._dino = None
-        self._depth = None
 
     @property
     def llm(self):
@@ -60,9 +52,9 @@ class ModelManager:
             self._llm = LLM(
                 model="Qwen/Qwen2-VL-2B-Instruct",
                 dtype=torch.bfloat16,
-                gpu_memory_utilization=0.80,
-                max_model_len=4096,
-                max_num_seqs=5,
+                gpu_memory_utilization=0.4,
+                max_model_len=1024,
+                max_num_seqs=1,
             )
         return self._llm
 
@@ -83,20 +75,9 @@ class ModelManager:
             )
         return self._dino
 
-    @property
-    def depth(self):
-        if self._depth is None:
-            logger.info("Initializing Depth model")
-            self._depth = MarigoldDepthPipeline.from_pretrained(
-                "prs-eth/marigold-depth-lcm-v1-0",
-                torch_dtype=torch.float16,
-                variant="fp16"
-            ).to("cuda")
-        return self._depth
-
     def cleanup(self):
         logger.info("Cleaning up models")
-        for model_name in ['_llm', '_sam', '_dino', '_depth']:
+        for model_name in ['_llm', '_sam', '_dino']:
             if hasattr(self, model_name) and getattr(self, model_name) is not None:
                 delattr(self, model_name)
         if torch.cuda.is_available():
@@ -114,45 +95,11 @@ def cuda_memory_manager():
 
 app = FastAPI(
     title="Multimodal vLLM API Server",
-    description="API for furniture analysis and depth estimation",
+    description="API for furniture analysis",
     version="1.0.0"
 )
 
 model_manager = ModelManager()
-
-@app.post(
-    "/generate_depth",
-    response_model=DepthResponse,
-    description="Generate depth map from input image"
-)
-async def generate_depth(request: DepthRequest):
-    with cuda_memory_manager():
-        try:
-            image = ImageUtils.decode_image(request.source_image)
-            generator = torch.Generator(device="cuda").manual_seed(2024)
-            
-            # Generate depth map
-            depth_output = model_manager.depth(
-                image,
-                generator=generator
-            )
-            
-            # Convert depth prediction to visualization
-            depth_image = model_manager.depth.image_processor.visualize_depth(
-                depth_output.prediction,
-                color_map="binary"
-            )
-            # Convert visualization to base64
-            depth_base64 = ImageUtils.encode_image(depth_image[0])
-
-            return DepthResponse(depth_image=depth_base64)
-            
-        except Exception as e:
-            logger.error(f"Depth generation error: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Depth generation failed: {str(e)}"
-            )
 
 @app.post(
     "/generate_captions",
@@ -204,7 +151,6 @@ async def startup_event():
     _ = model_manager.llm
     _ = model_manager.sam
     _ = model_manager.dino
-    _ = model_manager.depth
     logger.info("Server startup complete")
 
 @app.on_event("shutdown")
