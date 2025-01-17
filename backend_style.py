@@ -3,6 +3,7 @@ import json
 import torch
 import uvicorn
 import logging
+import numpy as np
 
 from enum import Enum
 from typing import Dict
@@ -60,8 +61,12 @@ class StyleResponse(BaseModel):
 class DepthResponse(BaseModel):
     depth_image: str
 
+class FurnitureItem(BaseModel):
+    caption: FurnitureDescription
+    mask: str = Field(..., description="Base64 encoded mask image")
+
 class CaptionResponse(BaseModel):
-    caption: Dict[str, FurnitureDescription]
+    furniture: Dict[str, FurnitureItem]
 
 class ModelManager:
     def __init__(self):
@@ -207,7 +212,7 @@ async def generate_depth(request: DepthRequest):
     with cuda_memory_manager():
         try:
             image = ImageUtils.decode_image(request.source_image).resize((1024, 1024))
-            generator = torch.Generator(device="cuda").manual_seed(2024)
+            generator = torch.Generator(device="cuda")
             
             # Generate depth map
             depth_output = model_manager.depth(
@@ -215,11 +220,11 @@ async def generate_depth(request: DepthRequest):
                 generator=generator
             )
             
-            # Convert depth prediction to visualization
             depth_image = model_manager.depth.image_processor.visualize_depth(
                 depth_output.prediction,
-                color_map="binary"
+                color_map="binary" 
             )
+
             # Convert visualization to base64
             depth_base64 = ImageUtils.encode_image(depth_image[0])
             del depth_output
@@ -281,7 +286,7 @@ async def generate_response(request: CaptionRequest):
     with cuda_memory_manager():
         try:
             image = ImageUtils.decode_image(request.source_image).resize((1024, 1024))
-            masks = get_segementaion(
+            images_furniture, masks = get_segementaion(
                 image,
                 model_manager.sam,
                 model_manager.dino
@@ -291,11 +296,15 @@ async def generate_response(request: CaptionRequest):
                 max_tokens=128,
                 temperature=0.0
             )
-
+            
             output_dict = {}
-            for i, mask in enumerate(masks):
-                image_base64 = ImageUtils.encode_image(mask)
+            for i, furniture in enumerate(images_furniture):
+                image_base64 = ImageUtils.encode_image(furniture)
                 conversation = CaptionUtils.get_conversation_template(image_base64)
+
+                mask_slice = masks[i, 0]
+                mask_image = (mask_slice * 255).astype(np.uint8)
+                mask_encoded = ImageUtils.encode_image(mask_image)
                 
                 output = model_manager.llm.chat(
                     conversation,
@@ -305,9 +314,12 @@ async def generate_response(request: CaptionRequest):
                 del output
                 caption = CaptionUtils.parse_json_response(generated_text)
                 
-                output_dict[f"furniture_{i}"] = caption
+                output_dict[f"furniture_{i}"] = FurnitureItem(
+                    caption=caption,
+                    mask=mask_encoded
+                )
 
-            return CaptionResponse(caption=output_dict)
+            return CaptionResponse(furniture=output_dict)
 
         except Exception as e:
             logger.error(f"Caption generation error: {str(e)}")

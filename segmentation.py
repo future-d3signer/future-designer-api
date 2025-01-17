@@ -141,4 +141,4 @@ def get_segementaion(image: Image, sam_model, grounding_dino_model):
         mask_slice = Image.fromarray(mask_slice)
         segmentation_masks.append(mask_slice)
 
-    return segmentation_masks
+    return segmentation_masks, masks
