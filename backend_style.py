@@ -5,6 +5,9 @@ import uvicorn
 import logging
 import numpy as np
 
+
+from transformers import pipeline
+
 from enum import Enum
 from typing import Dict
 from utils import ImageUtils, CaptionUtils
@@ -12,14 +15,18 @@ from contextlib import contextmanager
 from pydantic import BaseModel, Field
 from diffusers import (
     ControlNetModel,
-    MarigoldDepthPipeline,
     DPMSolverMultistepScheduler,
-    StableDiffusionXLControlNetPipeline
+    StableDiffusionXLControlNetPipeline,
+    StableDiffusionXLInpaintPipeline,
+    StableDiffusionControlNetInpaintPipeline,
+    AutoencoderKL,
+    LCMScheduler
 )
 from vllm import LLM, SamplingParams
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from groundingdino.util.inference import load_model
+from diffusers.utils.logging import set_verbosity
 from segmentation import get_segementaion, load_sam_model
 
 # import oneflow as flow
@@ -28,6 +35,7 @@ from segmentation import get_segementaion, load_sam_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+set_verbosity(logging.ERROR) 
 
 class FurnitureType(str, Enum):
     BED = "bed"
@@ -70,12 +78,21 @@ class CaptionResponse(BaseModel):
 
 class ModelManager:
     def __init__(self):
-        self._pipeline = None
+        self._pipeline_control = None
+        self._pipeline_inpaint = None
         self._prompts = None
         self._depth = None
         self._llm = None
         self._sam = None
         self._dino = None
+        self._current_image = None
+        self._current_depth = None
+
+    def set_current_image(self, image):
+        self._current_image = image
+    
+    def set_current_depth(self, depth):
+        self._current_depth = depth
 
     def load_prompts(self) -> Dict[str, str]:
         if self._prompts is None:
@@ -90,23 +107,54 @@ class ModelManager:
 
     @property
     def pipeline(self):
-        if self._pipeline is None:
+        if self._pipeline_control is None and self._pipeline_inpaint is None:
             logger.info("Initializing style transfer pipeline")
             try:
-                # Initialize ControlNet
                 controlnet = ControlNetModel.from_pretrained(
                     "diffusers/controlnet-depth-sdxl-1.0",
+                    #"destitech/controlnet-inpaint-dreamer-sdxl",
                     torch_dtype=torch.float16,
                     variant="fp16"
                 ).to("cuda")
 
-                # Initialize Pipeline
-                self._pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
-                    "SG161222/RealVisXL_V5.0_Lightning",
+                self._pipeline_control = StableDiffusionXLControlNetPipeline.from_pretrained(
+                    #"SG161222/RealVisXL_V5.0_Lightning",
+                    "RunDiffusion/Juggernaut-XL-v9",
+                    #"SG161222/RealVisXL_V3.0_Turbo",
+                    #"stabilityai/sdxl-turbo",
                     torch_dtype=torch.float16,
                     variant="fp16",
-                    controlnet=controlnet
+                    controlnet=controlnet,
                 ).to("cuda")
+
+                # self._pipeline_control.scheduler = DPMSolverMultistepScheduler.from_config(
+                #     self._pipeline_control.scheduler.config,
+                #     use_karras_sigmas=True
+                # )
+
+                self._pipeline_control.scheduler = LCMScheduler.from_config(
+                    self._pipeline_control.scheduler.config
+                )
+
+                self._pipeline_control.load_lora_weights("latent-consistency/lcm-lora-sdxl")
+                self._pipeline_control.fuse_lora()
+
+                self._pipeline_inpaint = StableDiffusionXLInpaintPipeline.from_pipe(
+                    self._pipeline_control,
+                    torch_dtype=torch.float16,
+                ).to("cuda")
+
+                # self._pipeline_inpaint.load_ip_adapter(
+                #     "h94/IP-Adapter",
+                #     subfolder="sdxl_models",
+                #     weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
+                #     image_encoder_folder="models/image_encoder",
+                # )
+                # scale = {
+                #     "down": {"block_2": [0.0, 1.0]},
+                #     "up": {"block_0": [0.0, 1.0, 0.0]},
+                # }
+                # self._pipeline_inpaint.set_ip_adapter_scale(scale)
 
                 #self._pipeline.unet = oneflow_compile(self._pipeline.unet)
                 
@@ -117,26 +165,28 @@ class ModelManager:
                 # )
 
                 # Configure scheduler
-                self._pipeline.scheduler = DPMSolverMultistepScheduler.from_config(
-                    self._pipeline.scheduler.config,
-                    use_karras_sigmas=True
-                )
+
 
             except Exception as e:
                 logger.error(f"Pipeline initialization failed: {str(e)}")
                 raise RuntimeError(f"Failed to initialize pipeline: {str(e)}")
 
-        return self._pipeline
+        return self._pipeline_control
+    
+    @property
+    def pipeline_inpaint(self):
+        return self._pipeline_inpaint
+    
+    @property
+    def pipeline_control(self):
+        return self._pipeline_control
     
     @property
     def depth(self):
         if self._depth is None:
             logger.info("Initializing Depth model")
-            self._depth = MarigoldDepthPipeline.from_pretrained(
-                "prs-eth/marigold-depth-lcm-v1-0",
-                torch_dtype=torch.float16,
-                variant="fp16"
-            ).to("cuda")
+            self._depth = pipeline(task="depth-estimation", 
+                                   model="depth-anything/Depth-Anything-V2-Small-hf")
         return self._depth
 
     @property
@@ -144,9 +194,10 @@ class ModelManager:
         if self._llm is None:
             logger.info("Initializing LLM model")
             self._llm = LLM(
-                model="Qwen/Qwen2-VL-2B-Instruct",
+                # model="Qwen/Qwen2-VL-2B-Instruct",
+                model="filnow/qwen-merged-lora",
                 dtype=torch.bfloat16,
-                gpu_memory_utilization=0.3,
+                gpu_memory_utilization=0.4,
                 max_model_len=1024,
                 max_num_seqs=1,
             )
@@ -171,7 +222,7 @@ class ModelManager:
 
     def cleanup(self):
         logger.info("Cleaning up models")
-        for model_name in ['_llm', '_sam', '_dino', '_pipeline', '_depth']:
+        for model_name in ['_llm', '_sam', '_dino', '_pipeline_control', '_depth']:
             if hasattr(self, model_name) and getattr(self, model_name) is not None:
                 delattr(self, model_name)
         if torch.cuda.is_available():
@@ -204,6 +255,74 @@ app.add_middleware(
 model_manager = ModelManager()
 
 @app.post(
+    "/generate_inpaint",
+    response_model=StyleResponse,
+    description="Generate inpainted image from input image"
+)
+async def generate_inpaint(request: StyleRequest):
+    with cuda_memory_manager():
+        try:
+            if model_manager._current_image is None or model_manager._current_depth is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Original image and depth map must be generated first"
+            )
+            
+            prompt = request.style
+            #positive_prompt = f"{request.style}, best quality, high resolution, masterpiece, detailed"
+            #negative_prompt = "low quality, blurry, bad anatomy, ugly, duplicate, deformed"
+            #prompt = "Orange sofa, made of velvet, sculptural shape, featuring bench seat, lobby in mind, luxury price range."
+            image = ImageUtils.decode_image(request.style_image)
+
+            seed = torch.randint(0, 100000, (1,)).item()
+
+            blured_image = model_manager.pipeline_inpaint.mask_processor.blur(image, blur_factor=25)
+
+            negative_prompt = "lowres, watermark, banner, logo, watermark, contactinfo, text, deformed, blurry, blur, out of focus, out of frame, surreal, ugly"
+
+            output = model_manager.pipeline_inpaint(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image=model_manager._current_image,
+                mask_image=blured_image,
+                num_inference_steps=8,
+                strength=0.99,
+                guidance_scale=2.5,
+                #ip_adapter_image=model_manager._current_image,
+                #cross_attention_scale=1.0,
+                generator=torch.Generator(device="cuda").manual_seed(seed),
+                padding_mask_crop=5,
+                guidance_rescale=0.5,
+                original_inference_steps=50,  # Original model steps
+                denoising_end=1.0
+            )
+
+            # output_final = model_manager.pipeline_control(
+            #     prompt="Enhance furniture details, preserve original design, high quality materials",
+            #     negative_prompt="deformed furniture, unrealistic materials, changed design, different style",
+            #     guidance_scale=1.0,
+            #     num_inference_steps=5,
+            #     image=model_manager._current_depth,
+            #     controlnet_conditioning_scale=0.4,
+            #     control_guidance_start=0.2,
+            #     control_guidance_end=0.6,
+            #     generator=torch.Generator(device="cuda"),
+            # )
+
+
+            generated_image = ImageUtils.encode_image(output.images[0])
+            del output
+            
+            return StyleResponse(generated_image=generated_image)
+
+        except Exception as e:
+            logger.error(f"Inpaint generation failed: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Inpaint generation failed: {str(e)}"
+            )
+
+@app.post(
     "/generate_depth",
     response_model=DepthResponse,
     description="Generate depth map from input image"
@@ -212,23 +331,15 @@ async def generate_depth(request: DepthRequest):
     with cuda_memory_manager():
         try:
             image = ImageUtils.decode_image(request.source_image).resize((1024, 1024))
-            generator = torch.Generator(device="cuda")
-            
-            # Generate depth map
-            depth_output = model_manager.depth(
-                image,
-                generator=generator
-            )
-            
-            depth_image = model_manager.depth.image_processor.visualize_depth(
-                depth_output.prediction,
-                color_map="binary" 
-            )
 
-            # Convert visualization to base64
-            depth_base64 = ImageUtils.encode_image(depth_image[0])
-            del depth_output
+            model_manager.set_current_image(image)
 
+            depth = model_manager.depth(image)["depth"]
+
+            model_manager.set_current_depth(depth)
+
+            depth_base64 = ImageUtils.encode_image(depth)
+            del depth
             return DepthResponse(depth_image=depth_base64)
             
         except Exception as e:
@@ -254,11 +365,11 @@ async def generate_style(request: StyleRequest):
             
             depth_image = ImageUtils.decode_image(request.style_image)
 
-            output = model_manager.pipeline(
+            output = model_manager.pipeline_control(
                 prompt=prompts[request.style],
                 negative_prompt=prompts["negative"],
-                guidance_scale=6.5,
-                num_inference_steps=30,
+                guidance_scale=1.5,
+                num_inference_steps=8,
                 image=[depth_image],
                 controlnet_conditioning_scale=0.7,
                 control_guidance_end=0.7,
@@ -294,7 +405,7 @@ async def generate_response(request: CaptionRequest):
 
             sampling_params = SamplingParams(
                 max_tokens=128,
-                temperature=0.0
+                temperature=0.3
             )
             
             output_dict = {}
@@ -311,6 +422,7 @@ async def generate_response(request: CaptionRequest):
                     sampling_params=sampling_params
                 )
                 generated_text = output[0].outputs[0].text
+                logger.info(f"Generated caption: {generated_text}")
                 del output
                 caption = CaptionUtils.parse_json_response(generated_text)
                 

@@ -3,7 +3,7 @@ import json
 import base64
 import numpy as np
 
-from PIL import Image
+from PIL import Image, ImageFilter
 from fastapi import HTTPException
 
 
