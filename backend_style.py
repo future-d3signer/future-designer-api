@@ -7,6 +7,7 @@ import numpy as np
 
 
 from transformers import pipeline
+from PIL import Image
 
 from enum import Enum
 from typing import Dict
@@ -154,7 +155,7 @@ class ModelManager:
                 #     "down": {"block_2": [0.0, 1.0]},
                 #     "up": {"block_0": [0.0, 1.0, 0.0]},
                 # }
-                # self._pipeline_inpaint.set_ip_adapter_scale(scale)
+                # self._pipeline_inpaint.set_ip_adapter_scale(0.4)
 
                 #self._pipeline.unet = oneflow_compile(self._pipeline.unet)
                 
@@ -268,7 +269,9 @@ async def generate_inpaint(request: StyleRequest):
                     detail="Original image and depth map must be generated first"
             )
             
-            prompt = request.style
+            base_prompt = request.style
+            enhancement_prompt = "masterpiece, professional lighting, realistic materials, highly detailed"
+            full_prompt = f"{base_prompt}, {enhancement_prompt}"
             #positive_prompt = f"{request.style}, best quality, high resolution, masterpiece, detailed"
             #negative_prompt = "low quality, blurry, bad anatomy, ugly, duplicate, deformed"
             #prompt = "Orange sofa, made of velvet, sculptural shape, featuring bench seat, lobby in mind, luxury price range."
@@ -276,12 +279,14 @@ async def generate_inpaint(request: StyleRequest):
 
             seed = torch.randint(0, 100000, (1,)).item()
 
-            blured_image = model_manager.pipeline_inpaint.mask_processor.blur(image, blur_factor=25)
+            padded_mask = ImageUtils.add_mask_padding(image, padding=30)
 
-            negative_prompt = "lowres, watermark, banner, logo, watermark, contactinfo, text, deformed, blurry, blur, out of focus, out of frame, surreal, ugly"
+            blured_image = model_manager.pipeline_inpaint.mask_processor.blur(padded_mask, blur_factor=15)
+
+            negative_prompt = "deformed, low quality, blurry, noise, grainy, duplicate, watermark, text, out of frame"
 
             output = model_manager.pipeline_inpaint(
-                prompt=prompt,
+                prompt=full_prompt,
                 negative_prompt=negative_prompt,
                 image=model_manager._current_image,
                 mask_image=blured_image,
@@ -290,25 +295,99 @@ async def generate_inpaint(request: StyleRequest):
                 guidance_scale=2.5,
                 #ip_adapter_image=model_manager._current_image,
                 #cross_attention_scale=1.0,
-                generator=torch.Generator(device="cuda").manual_seed(seed),
-                padding_mask_crop=5,
+                generator=torch.Generator(device="cuda").manual_seed(1337),
+                #padding_mask_crop=5,
                 guidance_rescale=0.5,
                 original_inference_steps=50,  # Original model steps
                 denoising_end=1.0
             )
 
-            # output_final = model_manager.pipeline_control(
-            #     prompt="Enhance furniture details, preserve original design, high quality materials",
-            #     negative_prompt="deformed furniture, unrealistic materials, changed design, different style",
-            #     guidance_scale=1.0,
+            # refined_output = model_manager.pipeline_control(
+            #     prompt="enhance details, preserve lighting",
+            #     negative_prompt="blur, noise",
+            #     guidance_scale=4.0,
             #     num_inference_steps=5,
             #     image=model_manager._current_depth,
-            #     controlnet_conditioning_scale=0.4,
+            #     controlnet_conditioning_scale=0.6,
             #     control_guidance_start=0.2,
-            #     control_guidance_end=0.6,
+            #     control_guidance_end=0.7,
             #     generator=torch.Generator(device="cuda"),
+            #     image_input=output.images[0]  # Using first pass result
             # )
 
+            generated_image = ImageUtils.encode_image(output.images[0])
+            del output
+            
+            return StyleResponse(generated_image=generated_image)
+
+        except Exception as e:
+            logger.error(f"Inpaint generation failed: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Inpaint generation failed: {str(e)}"
+            )
+        
+@app.post(
+    "/generate_replace",
+    response_model=StyleResponse,
+    description="Generate inpainted image from input image"
+)
+async def replace(request: StyleRequest):
+    with cuda_memory_manager():
+        try:
+            if model_manager._current_image is None or model_manager._current_depth is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Original image and depth map must be generated first"
+            )
+
+            test_image = Image.open("/home/s464915/future-designer/experiments/future-designer-api/chair_3af6877c-49cb-479e-b025-241bbaa546de.png")
+            
+            base_prompt = request.style
+            enhancement_prompt = "masterpiece, professional lighting, realistic materials, highly detailed"
+            full_prompt = f"{base_prompt}, {enhancement_prompt}"
+            #positive_prompt = f"{request.style}, best quality, high resolution, masterpiece, detailed"
+            #negative_prompt = "low quality, blurry, bad anatomy, ugly, duplicate, deformed"
+            #prompt = "Orange sofa, made of velvet, sculptural shape, featuring bench seat, lobby in mind, luxury price range."
+            image = ImageUtils.decode_image(request.style_image)
+
+            seed = torch.randint(0, 100000, (1,)).item()
+
+            padded_mask = ImageUtils.add_mask_padding(image, padding=30)
+
+            blured_image = model_manager.pipeline_inpaint.mask_processor.blur(padded_mask, blur_factor=15)
+
+            negative_prompt = "deformed, low quality, blurry, noise, grainy, duplicate, watermark, text, out of frame"
+
+            output = model_manager.pipeline_inpaint(
+                prompt=full_prompt,
+                negative_prompt=negative_prompt,
+                image=model_manager._current_image,
+                mask_image=blured_image,
+                num_inference_steps=8,
+                strength=0.99,
+                guidance_scale=2.5,
+                ip_adapter_image=test_image,
+                #cross_attention_scale=1.0,
+                generator=torch.Generator(device="cuda").manual_seed(1337),
+                #padding_mask_crop=5,
+                guidance_rescale=0.5,
+                original_inference_steps=50,  # Original model steps
+                denoising_end=1.0
+            )
+
+            # refined_output = model_manager.pipeline_control(
+            #     prompt="enhance details, preserve lighting",
+            #     negative_prompt="blur, noise",
+            #     guidance_scale=4.0,
+            #     num_inference_steps=5,
+            #     image=model_manager._current_depth,
+            #     controlnet_conditioning_scale=0.6,
+            #     control_guidance_start=0.2,
+            #     control_guidance_end=0.7,
+            #     generator=torch.Generator(device="cuda"),
+            #     image_input=output.images[0]  # Using first pass result
+            # )
 
             generated_image = ImageUtils.encode_image(output.images[0])
             del output
@@ -363,14 +442,14 @@ async def generate_style(request: StyleRequest):
                     detail=f"Invalid style: {request.style}"
                 )
             
-            depth_image = ImageUtils.decode_image(request.style_image)
+            #depth_image = ImageUtils.decode_image(request.style_image)
 
             output = model_manager.pipeline_control(
                 prompt=prompts[request.style],
                 negative_prompt=prompts["negative"],
                 guidance_scale=1.5,
-                num_inference_steps=8,
-                image=[depth_image],
+                num_inference_steps=10,
+                image=[model_manager._current_depth],
                 controlnet_conditioning_scale=0.7,
                 control_guidance_end=0.7,
                 generator=torch.Generator(device="cuda"),
@@ -422,7 +501,6 @@ async def generate_response(request: CaptionRequest):
                     sampling_params=sampling_params
                 )
                 generated_text = output[0].outputs[0].text
-                logger.info(f"Generated caption: {generated_text}")
                 del output
                 caption = CaptionUtils.parse_json_response(generated_text)
                 

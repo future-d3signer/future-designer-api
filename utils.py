@@ -5,7 +5,7 @@ import numpy as np
 
 from PIL import Image, ImageFilter
 from fastapi import HTTPException
-
+import cv2
 
 class ImageUtils:
     @staticmethod
@@ -28,6 +28,21 @@ class ImageUtils:
                 status_code=400,
                 detail=f"Invalid image data: {str(e)}"
             )
+    
+    @staticmethod
+    def add_mask_padding(mask_image: Image.Image, padding: int = 20) -> Image.Image:
+        """Add padding around mask using dilation"""
+        # Convert PIL to numpy array
+        mask_np = np.array(mask_image.convert('L'))
+        
+        # Create kernel for dilation
+        kernel = np.ones((padding, padding), np.uint8)
+        
+        # Dilate mask
+        dilated_mask = cv2.dilate(mask_np, kernel, iterations=1)
+        
+        # Convert back to PIL
+        return Image.fromarray(dilated_mask)
 
 class CaptionUtils:
     @staticmethod
