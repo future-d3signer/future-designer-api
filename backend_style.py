@@ -23,7 +23,10 @@ from diffusers import (
     AutoencoderKL,
     LCMScheduler,
     UNet2DConditionModel,
-    StableDiffusionXLControlNetInpaintPipeline
+    StableDiffusionXLControlNetInpaintPipeline,
+    StableDiffusionXLControlNetUnionPipeline,
+    ControlNetUnionModel,
+    StableDiffusionXLControlNetUnionInpaintPipeline
 )
 from vllm import LLM, SamplingParams
 from fastapi import FastAPI, HTTPException
@@ -124,11 +127,10 @@ class ModelManager:
         if self._pipeline_control is None and self._pipeline_inpaint is None:
             logger.info("Initializing style transfer pipeline")
             try:
-                controlnet = ControlNetModel.from_pretrained(
-                    "diffusers/controlnet-depth-sdxl-1.0",
-                    #"destitech/controlnet-inpaint-dreamer-sdxl",
+                controlnet = ControlNetUnionModel.from_pretrained(
+                    "OzzyGT/controlnet-union-promax-sdxl-1.0",
                     torch_dtype=torch.float16,
-                    variant="fp16"
+                    variant="fp16",
                 ).to("cuda")
 
                 # unet = UNet2DConditionModel.from_pretrained(
@@ -148,9 +150,16 @@ class ModelManager:
                 #     controlnet=controlnet,
                 # ).to("cuda")
 
-                self._pipeline_inpaint = StableDiffusionXLControlNetInpaintPipeline.from_pretrained(
-                    "SG161222/RealVisXL_V5.0_Lightning", controlnet=controlnet, torch_dtype=torch.float16
-                    ).to("cuda")
+                vae = AutoencoderKL.from_pretrained("madebyollin/sdxl-vae-fp16-fix", 
+                                                    torch_dtype=torch.float16).to("cuda")
+
+                self._pipeline_inpaint = StableDiffusionXLControlNetUnionInpaintPipeline.from_pretrained(
+                    "SG161222/RealVisXL_V5.0", 
+                    controlnet=controlnet,
+                    vae=vae, 
+                    torch_dtype=torch.float16,
+                    variant="fp16"
+                ).to("cuda")
         
 
                 self._pipeline_inpaint.scheduler = LCMScheduler.from_config(
@@ -161,10 +170,11 @@ class ModelManager:
                 self._pipeline_inpaint.fuse_lora()
 
 
-                self._pipeline_control = StableDiffusionXLControlNetPipeline.from_pipe(
+                self._pipeline_control = StableDiffusionXLControlNetUnionPipeline.from_pipe(
                     self._pipeline_inpaint,
-                    torch_dtype=torch.float16,
+                    torch_dtype=torch.float16
                 ).to("cuda")
+   
 
                 # self._pipeline_replace.load_ip_adapter(
                 #     "h94/IP-Adapter",
@@ -305,18 +315,12 @@ async def generate_inpaint(request: StyleRequest):
                 image=model_manager._current_image,
                 mask_image=blured_image,
                 num_inference_steps=8,
-                control_image = model_manager._current_depth,
-                #strength=0.99,
+                control_image=[model_manager._current_depth],
                 guidance_scale=1.5,
-                #ip_adapter_image=model_manager._current_image,
-                #cross_attention_scale=1.0,
                 generator=torch.Generator(device="cuda"),
                 controlnet_conditioning_scale=0.7,
                 control_guidance_end=0.7,
-                #padding_mask_crop=5,
-                # guidance_rescale=0.5,
-                # original_inference_steps=50,  # Original model steps
-                # denoising_end=1.0
+                control_mode=[1]
             )
 
             generated_image = ImageUtils.encode_image(output.images[0])
@@ -345,34 +349,50 @@ async def generate_delete(request: StyleRequest):
                     detail="Original image and depth map must be generated first"
                 )
             
-            # Use prompts that encourage creating empty space
-            base_prompt = "empty space, clean room"
-            enhancement_prompt = "continuous floor, clean walls, no furniture, empty area, consistent with surroundings"
-            full_prompt = f"{base_prompt}, {enhancement_prompt}"
+            prompt = "empty room, continuous clean wall and floor, seamless background, no furniture, no objects, no items, no clutter, no patterns, no textures, no seams, no artifacts, no lines, no borders, no distinct features, no noise, no shadows, no inconsistent lighting, no distortion, no blur, no grain"
+
             image = ImageUtils.decode_image(request.style_image)
+
+            padded_mask = ImageUtils.add_mask_padding(image, padding=20)
+            
+            blured_image = model_manager.pipeline_inpaint.mask_processor.blur(padded_mask, blur_factor=15)
+
+            threshold = 127
+            binary_mask = blured_image.point(lambda x: 0 if x > threshold else 255)
+
+            result_image = model_manager._current_image.copy()
+
+            original_data = model_manager._current_image.getdata()
+            mask_data = binary_mask.getdata()
+            result_data = []
+
+            for i, pixel in enumerate(original_data):
+                if mask_data[i] == 0: 
+                    if isinstance(pixel, tuple):
+                        result_data.append((0, 0, 0))  
+                    else:
+                        result_data.append(0)  
+                else:
+                    result_data.append(pixel)  
+
+            result_image.putdata(result_data)
 
             seed = torch.randint(0, 100000, (1,)).item()
 
-            # Add extra padding to ensure proper blending with surroundings
-            padded_mask = ImageUtils.add_mask_padding(image, padding=100)
-            
-            # Use more blur for smoother transitions between original and inpainted areas
-            blured_image = model_manager.pipeline_inpaint.mask_processor.blur(padded_mask, blur_factor=20)
-
-            # Stronger negative prompt to avoid generating new objects
-            negative_prompt="furniture, decor, objects, items, artifacts, clutter, anything, stuff"
+            negative_prompt = "furniture, objects, items, clutter, patterns, textures, seams, artifacts, lines, borders, distinct features, noise, shadows, inconsistent lighting, distortion, blur, grain"
             
             output = model_manager.pipeline_inpaint(
-                prompt=full_prompt,
+                prompt=prompt,
                 negative_prompt=negative_prompt,
                 image=model_manager._current_image,
                 mask_image=blured_image,
-                num_inference_steps=10,  # Increased for better quality
-                control_image=model_manager._current_depth,
-                guidance_scale=3.5,  # Increased to better follow the prompt
-                generator=torch.Generator(device="cuda").manual_seed(seed),  # Use the seed for reproducibility
+                control_image=[result_image],
+                control_mode=[6],
+                num_inference_steps=5,  
+                guidance_scale=3.5,     
+                generator=torch.Generator(device="cuda").manual_seed(seed),
             )
-
+ 
             generated_image = ImageUtils.encode_image(output.images[0])
             del output
             
@@ -493,15 +513,18 @@ async def generate_style(request: StyleRequest):
                 )
             
             #depth_image = ImageUtils.decode_image(request.style_image)
-
+            
             output = model_manager.pipeline_control(
                 prompt=prompts[request.style],
                 negative_prompt=prompts["negative"],
+                width=1024,
+                height=1024,
                 guidance_scale=1.5,
                 num_inference_steps=10,
-                image=[model_manager._current_depth],
+                control_image=[model_manager._current_depth],
                 controlnet_conditioning_scale=0.7,
                 control_guidance_end=0.7,
+                control_mode=[1],
                 generator=torch.Generator(device="cuda"),
             )
 
