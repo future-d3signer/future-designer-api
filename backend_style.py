@@ -34,7 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from groundingdino.util.inference import load_model
 from diffusers.utils.logging import set_verbosity
 from segmentation import get_segementaion, load_sam_model
-
+from bs4 import BeautifulSoup
 from diffusers.image_processor import IPAdapterMaskProcessor
 
 import requests
@@ -47,6 +47,10 @@ import io
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 set_verbosity(logging.ERROR) 
+
+
+class URLRequest(BaseModel):
+    url: str
 
 class FurnitureType(str, Enum):
     BED = "bed"
@@ -280,6 +284,28 @@ app.add_middleware(
 )
 
 model_manager = ModelManager()
+
+
+@app.post("/scrape-images")
+async def scrape_images(request: URLRequest):
+    url = request.url
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+    }
+    response = requests.get(url, headers=headers)
+
+    if response.status_code == 200:
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        gallery_div = soup.find('div', class_='css-bbh9aa elvndys0')
+        if gallery_div:
+            image_tags = gallery_div.find_all('img')
+            image_links = [img['src'] for img in image_tags if 'src' in img.attrs]
+            return {"image_links": image_links}
+        else:
+            raise HTTPException(status_code=404, detail="No image gallery thumbnails found.")
+    else:
+        raise HTTPException(status_code=response.status_code, detail="Failed to retrieve the webpage.")
 
 @app.post(
     "/generate_inpaint",
