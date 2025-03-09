@@ -1,4 +1,5 @@
 import gc
+import os
 import json
 import torch
 import uvicorn
@@ -36,6 +37,10 @@ from diffusers.utils.logging import set_verbosity
 from segmentation import get_segementaion, load_sam_model
 from bs4 import BeautifulSoup
 from diffusers.image_processor import IPAdapterMaskProcessor
+from pymilvus import MilvusClient, model
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import requests
 from PIL import Image
@@ -48,6 +53,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 set_verbosity(logging.ERROR) 
 
+
+class SearchRequest(BaseModel):
+    type: str = ""
+    style: str = ""
+    color: str = ""
+    material: str = ""
+    shape: str = ""
+    details: str = ""
+    room_type: str = ""
+    price_range: str = ""
 
 class URLRequest(BaseModel):
     url: str
@@ -285,6 +300,85 @@ app.add_middleware(
 
 model_manager = ModelManager()
 
+#MILUV CONFIG
+milvus_uri = os.getenv("MILVUS_URL")
+token = os.getenv("MILVUS_TOKEN")
+collection_name = "furniture_synthetic_dataset_v2"
+milvus_client = MilvusClient(uri=milvus_uri, token=token)
+
+embedding_fn = model.DefaultEmbeddingFunction()
+
+relevant_columns = ['type', 
+                    'style', 
+                    'color', 
+                    'material', 
+                    'shape', 
+                    'details', 
+                    'room_type', 
+                    'price_range'
+                ]
+
+@app.post("/search")
+def search_similar_items(req: SearchRequest, top_k: int = 5):
+    milvus_client.load_collection(collection_name)
+
+    vector_style = embedding_fn.encode_queries([req.style])[0].tolist()
+    vector_color = embedding_fn.encode_queries([req.color])[0].tolist()
+    vector_material = embedding_fn.encode_queries([req.material])[0].tolist()
+    vector_details = embedding_fn.encode_queries([req.details])[0].tolist()
+
+    search_results_style = milvus_client.search(
+        collection_name=collection_name,
+        data=[vector_style],
+        anns_field="vector_style",
+        limit=top_k,
+        filter=f'type == "{req.type}"',
+        output_fields=["columns", "image_name"],
+    )
+
+    search_results_color = milvus_client.search(
+        collection_name=collection_name,
+        data=[vector_color],
+        anns_field="vector_color",
+        limit=top_k,
+        filter=f'type == "{req.type}"',
+        output_fields=["columns", "image_name"],
+    )
+
+    search_results_material = milvus_client.search(
+        collection_name=collection_name,
+        data=[vector_material],
+        anns_field="vector_material",
+        limit=top_k,
+        filter=f'type == "{req.type}"',
+        output_fields=["columns", "image_name"],
+    )
+
+    search_results_details = milvus_client.search(
+        collection_name=collection_name,
+        data=[vector_details],
+        anns_field="vector_details",
+        limit=top_k,
+        filter=f'type == "{req.type}"',
+        output_fields=["columns", "image_name"],
+    )
+
+    # Combine results
+    combined_results = []
+    for result in [
+        search_results_style,
+        search_results_color,
+        search_results_material,
+        search_results_details,
+    ]:
+        for hit in result[0]:
+            combined_results.append(
+                {"id": hit["id"], "distance": hit["distance"], "entity": hit["entity"]}
+            )
+
+    # Sort combined results by distance
+    combined_results.sort(key=lambda x: x["distance"], reverse=True)
+    return {"results": combined_results[:top_k]}
 
 @app.post("/scrape-images")
 async def scrape_images(request: URLRequest):
