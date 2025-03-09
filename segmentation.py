@@ -39,8 +39,8 @@ def load_image(image_source: Image) -> Tuple[np.array, torch.Tensor]:
     return image, image_transformed
 
 def load_sam_model(checkpoint_path="sam2_h.pth", device="cuda"):
-    checkpoint = "/home/s464915/future-designer/experiments/segment-anything-2/checkpoints/sam2.1_hiera_large.pt"
-    model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+    checkpoint = "/home/s464915/future-designer/experiments/segment-anything-2/checkpoints/sam2.1_hiera_base_plus.pt"
+    model_cfg = "configs/sam2.1/sam2.1_hiera_b+.yaml"
     sam = build_sam2(model_cfg, checkpoint)
     sam.to(device=DEVICE)
     predictor = SAM2ImagePredictor(sam)
@@ -141,4 +141,4 @@ def get_segementaion(image: Image, sam_model, grounding_dino_model):
         mask_slice = Image.fromarray(mask_slice)
         segmentation_masks.append(mask_slice)
 
-    return segmentation_masks, masks
+    return segmentation_masks, masks, boxes

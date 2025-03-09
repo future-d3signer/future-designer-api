@@ -107,6 +107,7 @@ class DepthResponse(BaseModel):
 class FurnitureItem(BaseModel):
     caption: FurnitureDescription
     mask: str = Field(..., description="Base64 encoded mask image")
+    box: str = Field(..., description="Base64 encoded mask image")
 
 class CaptionResponse(BaseModel):
     furniture: Dict[str, FurnitureItem]
@@ -194,15 +195,19 @@ class ModelManager:
                     torch_dtype=torch.float16
                 ).to("cuda")
    
+                self._pipeline_replace = StableDiffusionXLControlNetUnionInpaintPipeline.from_pipe(
+                    self._pipeline_inpaint,
+                    torch_dtype=torch.float16
+                ).to("cuda")
 
-                # self._pipeline_replace.load_ip_adapter(
-                #     "h94/IP-Adapter",
-                #     subfolder="sdxl_models",
-                #     weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
-                #     image_encoder_folder="models/image_encoder",
-                # )
+                self._pipeline_replace.load_ip_adapter(
+                    "h94/IP-Adapter",
+                    subfolder="sdxl_models",
+                    weight_name="ip-adapter_sdxl_vit-h.safetensors",
+                    image_encoder_folder="models/image_encoder",
+                )
 
-                # self._pipeline_replace.set_ip_adapter_scale(0.4)
+                self._pipeline_replace.set_ip_adapter_scale(0.2)
 
                 #self._pipeline_control.unet = orginal_unet
 
@@ -415,6 +420,8 @@ async def generate_inpaint(request: StyleRequest):
                     detail="Original image and depth map must be generated first"
             )
             
+            model_manager.pipeline_inpaint.unload_ip_adapter()
+            
             base_prompt = request.style
             enhancement_prompt = "masterpiece, professional lighting, realistic materials, highly detailed"
             full_prompt = f"{base_prompt}, {enhancement_prompt}"
@@ -468,12 +475,12 @@ async def generate_delete(request: StyleRequest):
                     status_code=400,
                     detail="Original image and depth map must be generated first"
                 )
-            
+            model_manager.pipeline_inpaint.unload_ip_adapter()
             prompt = "empty room, continuous clean wall and floor, seamless background, no furniture, no objects, no items, no clutter, no patterns, no textures, no seams, no artifacts, no lines, no borders, no distinct features, no noise, no shadows, no inconsistent lighting, no distortion, no blur, no grain"
 
             image = ImageUtils.decode_image(request.style_image)
 
-            padded_mask = ImageUtils.add_mask_padding(image, padding=20)
+            padded_mask = ImageUtils.add_mask_padding(image, padding=50)
             
             blured_image = model_manager.pipeline_inpaint.mask_processor.blur(padded_mask, blur_factor=15)
 
@@ -538,6 +545,15 @@ async def generate_replace(request: ReplaceRequest):
                     status_code=400,
                     detail="Original image and depth map must be generated first"
             )
+
+            model_manager._pipeline_replace.load_ip_adapter(
+                    "h94/IP-Adapter",
+                    subfolder="sdxl_models",
+                    weight_name="ip-adapter_sdxl_vit-h.safetensors",
+                    image_encoder_folder="models/image_encoder",
+                )
+
+            model_manager._pipeline_replace.set_ip_adapter_scale(0.4)
             
             base_prompt = request.style
             enhancement_prompt = "masterpiece, professional lighting, realistic materials, highly detailed"
@@ -552,12 +568,32 @@ async def generate_replace(request: ReplaceRequest):
 
             padded_mask = ImageUtils.add_mask_padding(mask_image, padding=30)
 
-            adapter_image_path = f"https://similarimages.blob.core.windows.net/fd1new/{request.adapter_image}"
+            blured_image = model_manager.pipeline_inpaint.mask_processor.blur(padded_mask, blur_factor=15)
+
+            threshold = 127
+            binary_mask = blured_image.point(lambda x: 0 if x > threshold else 255)
+
+            result_image = model_manager._current_image.copy()
+
+            original_data = model_manager._current_image.getdata()
+            mask_data = binary_mask.getdata()
+            result_data = []
+
+            for i, pixel in enumerate(original_data):
+                if mask_data[i] == 0: 
+                    if isinstance(pixel, tuple):
+                        result_data.append((0, 0, 0))  
+                    else:
+                        result_data.append(0)  
+                else:
+                    result_data.append(pixel)  
+
+            result_image.putdata(result_data)
+
+            adapter_image_path = f"https://futuredesigner.blob.core.windows.net/futuredesigner1/{request.adapter_image}"
 
             response = requests.get(adapter_image_path)
             load_adapter_image = Image.open(io.BytesIO(response.content))
-
-            blured_image = model_manager.pipeline_inpaint.mask_processor.blur(padded_mask, blur_factor=15)
 
             negative_prompt = "deformed, low quality, blurry, noise, grainy, duplicate, watermark, text, out of frame"
 
@@ -567,16 +603,15 @@ async def generate_replace(request: ReplaceRequest):
                 image=model_manager._current_image,
                 mask_image=blured_image,
                 num_inference_steps=8,
-                strength=0.99,
-                guidance_scale=2.5,
+                guidance_scale=1.5,
                 ip_adapter_image=load_adapter_image,
-                #cross_attention_scale=1.0,
                 generator=torch.Generator(device="cuda"),
-                #padding_mask_crop=5,
-                guidance_rescale=0.5,
-                original_inference_steps=50,  # Original model steps
                 denoising_end=1.0,
                 cross_attention_kwargs={"ip_adapter_masks": ip_masks},
+                control_image=[result_image],
+                controlnet_conditioning_scale=0.7,
+                control_guidance_end=0.7,
+                control_mode=[6]
             )
 
             generated_image = ImageUtils.encode_image(output.images[0])
@@ -633,7 +668,7 @@ async def generate_style(request: StyleRequest):
                 )
             
             #depth_image = ImageUtils.decode_image(request.style_image)
-            
+            model_manager.pipeline_control.unload_ip_adapter()
             output = model_manager.pipeline_control(
                 prompt=prompts[request.style],
                 negative_prompt=prompts["negative"],
@@ -669,7 +704,7 @@ async def generate_response(request: CaptionRequest):
     with cuda_memory_manager():
         try:
             image = ImageUtils.decode_image(request.source_image).resize((1024, 1024))
-            images_furniture, masks = get_segementaion(
+            images_furniture, masks, boxes = get_segementaion(
                 image,
                 model_manager.sam,
                 model_manager.dino
@@ -684,10 +719,17 @@ async def generate_response(request: CaptionRequest):
             for i, furniture in enumerate(images_furniture):
                 image_base64 = ImageUtils.encode_image(furniture)
                 conversation = CaptionUtils.get_conversation_template(image_base64)
+                
+                x0, y0, x1, y1 = boxes[i].int().cpu().numpy()
+
+                box_image = np.zeros((1024, 1024), dtype=np.uint8)
+                box_image[y0:y1, x0:x1] = 255  # Fill bounding box with white
 
                 mask_slice = masks[i, 0]
                 mask_image = (mask_slice * 255).astype(np.uint8)
+                
                 mask_encoded = ImageUtils.encode_image(mask_image)
+                box_encoded = ImageUtils.encode_image(box_image)
                 
                 output = model_manager.llm.chat(
                     conversation,
@@ -699,7 +741,8 @@ async def generate_response(request: CaptionRequest):
                 
                 output_dict[f"furniture_{i}"] = FurnitureItem(
                     caption=caption,
-                    mask=mask_encoded
+                    mask=mask_encoded,
+                    box=box_encoded
                 )
 
             return CaptionResponse(furniture=output_dict)
