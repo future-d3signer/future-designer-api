@@ -1,32 +1,26 @@
 import gc
 import os
+import io
 import json
 import torch
 import uvicorn
 import logging
+import requests
 import numpy as np
 
 
 from transformers import pipeline
 from PIL import Image
-
 from enum import Enum
 from typing import Dict
 from utils import ImageUtils, CaptionUtils
 from contextlib import contextmanager
 from pydantic import BaseModel, Field
 from diffusers import (
-    ControlNetModel,
-    DPMSolverMultistepScheduler,
-    StableDiffusionXLControlNetPipeline,
-    StableDiffusionXLInpaintPipeline,
-    StableDiffusionControlNetInpaintPipeline,
     AutoencoderKL,
     LCMScheduler,
-    UNet2DConditionModel,
-    StableDiffusionXLControlNetInpaintPipeline,
-    StableDiffusionXLControlNetUnionPipeline,
     ControlNetUnionModel,
+    StableDiffusionXLControlNetUnionPipeline,
     StableDiffusionXLControlNetUnionInpaintPipeline
 )
 from vllm import LLM, SamplingParams
@@ -38,15 +32,9 @@ from segmentation import get_segementaion, load_sam_model
 from bs4 import BeautifulSoup
 from diffusers.image_processor import IPAdapterMaskProcessor
 from pymilvus import MilvusClient, model
-
 from dotenv import load_dotenv
-load_dotenv()
 
-import requests
-from PIL import Image
-import io
-# import oneflow as flow
-# from onediff.infer_compiler import oneflow_compile
+load_dotenv()
 
 
 logging.basicConfig(level=logging.INFO)
@@ -153,12 +141,6 @@ class ModelManager:
                     variant="fp16",
                 ).to("cuda")
 
-                # unet = UNet2DConditionModel.from_pretrained(
-                #     "latent-consistency/lcm-sdxl",
-                #     torch_dtype=torch.float16,
-                #     variant="fp16",
-                # )
-
                 # self._pipeline_control = StableDiffusionXLControlNetPipeline.from_pretrained(
                 #     #"SG161222/RealVisXL_V5.0_Lightning",
                 #     "RunDiffusion/Juggernaut-XL-v9",
@@ -200,20 +182,6 @@ class ModelManager:
                     torch_dtype=torch.float16
                 ).to("cuda")
 
-                self._pipeline_replace.load_ip_adapter(
-                    "h94/IP-Adapter",
-                    subfolder="sdxl_models",
-                    weight_name="ip-adapter_sdxl_vit-h.safetensors",
-                    image_encoder_folder="models/image_encoder",
-                )
-
-                self._pipeline_replace.set_ip_adapter_scale(0.2)
-
-                #self._pipeline_control.unet = orginal_unet
-
-                # self._pipeline_inpaint.unload_ip_adapter()
-                # self._pipeline_control.unload_ip_adapter()
-
             except Exception as e:
                 logger.error(f"Pipeline initialization failed: {str(e)}")
                 raise RuntimeError(f"Failed to initialize pipeline: {str(e)}")
@@ -245,7 +213,6 @@ class ModelManager:
         if self._llm is None:
             logger.info("Initializing LLM model")
             self._llm = LLM(
-                # model="Qwen/Qwen2-VL-2B-Instruct",
                 model="filnow/qwen-merged-lora",
                 dtype=torch.bfloat16,
                 gpu_memory_utilization=0.4,
@@ -475,17 +442,17 @@ async def generate_delete(request: StyleRequest):
                     status_code=400,
                     detail="Original image and depth map must be generated first"
                 )
+            
             model_manager.pipeline_inpaint.unload_ip_adapter()
-            prompt = "empty room, continuous clean wall and floor, seamless background, no furniture, no objects, no items, no clutter, no patterns, no textures, no seams, no artifacts, no lines, no borders, no distinct features, no noise, no shadows, no inconsistent lighting, no distortion, no blur, no grain"
+
+            prompt = "masterpiece, professional lighting, realistic materials, highly detailed"
 
             image = ImageUtils.decode_image(request.style_image)
 
-            padded_mask = ImageUtils.add_mask_padding(image, padding=50)
+            padded_mask = ImageUtils.add_mask_padding(image, padding=64)
             
-            blured_image = model_manager.pipeline_inpaint.mask_processor.blur(padded_mask, blur_factor=15)
-
             threshold = 127
-            binary_mask = blured_image.point(lambda x: 0 if x > threshold else 255)
+            binary_mask = padded_mask.point(lambda x: 0 if x > threshold else 255)
 
             result_image = model_manager._current_image.copy()
 
@@ -506,17 +473,17 @@ async def generate_delete(request: StyleRequest):
 
             seed = torch.randint(0, 100000, (1,)).item()
 
-            negative_prompt = "furniture, objects, items, clutter, patterns, textures, seams, artifacts, lines, borders, distinct features, noise, shadows, inconsistent lighting, distortion, blur, grain"
+            negative_prompt = "furniture"
             
             output = model_manager.pipeline_inpaint(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
                 image=model_manager._current_image,
-                mask_image=blured_image,
+                mask_image=padded_mask,
                 control_image=[result_image],
                 control_mode=[6],
-                num_inference_steps=5,  
-                guidance_scale=3.5,     
+                num_inference_steps=7,  
+                guidance_scale=1.5,
                 generator=torch.Generator(device="cuda").manual_seed(seed),
             )
  
@@ -667,8 +634,8 @@ async def generate_style(request: StyleRequest):
                     detail=f"Invalid style: {request.style}"
                 )
             
-            #depth_image = ImageUtils.decode_image(request.style_image)
             model_manager.pipeline_control.unload_ip_adapter()
+
             output = model_manager.pipeline_control(
                 prompt=prompts[request.style],
                 negative_prompt=prompts["negative"],
