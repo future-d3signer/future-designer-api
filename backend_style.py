@@ -33,6 +33,7 @@ from bs4 import BeautifulSoup
 from diffusers.image_processor import IPAdapterMaskProcessor
 from pymilvus import MilvusClient, model
 from dotenv import load_dotenv
+import base64
 
 load_dotenv()
 
@@ -351,6 +352,29 @@ def search_similar_items(req: SearchRequest, top_k: int = 5):
     # Sort combined results by distance
     combined_results.sort(key=lambda x: x["distance"], reverse=True)
     return {"results": combined_results[:top_k]}
+
+# Add this to your FastAPI backend
+@app.post("/proxy-image")
+async def proxy_image(request: dict):
+    url = request.get("url")
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+        
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Referer": "https://www.otodom.pl/"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        
+        # Convert image to base64
+        image_base64 = base64.b64encode(response.content).decode('utf-8')
+        return {"image": image_base64}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching image: {str(e)}")
+
 
 @app.post("/scrape-images")
 async def scrape_images(request: URLRequest):
