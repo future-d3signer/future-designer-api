@@ -10,7 +10,7 @@ import numpy as np
 
 
 from transformers import pipeline
-from PIL import Image
+from PIL import Image, ImageStat, ImageFilter, ImageOps
 from enum import Enum
 from typing import Dict
 from utils import ImageUtils, CaptionUtils
@@ -21,7 +21,8 @@ from diffusers import (
     LCMScheduler,
     ControlNetUnionModel,
     StableDiffusionXLControlNetUnionPipeline,
-    StableDiffusionXLControlNetUnionInpaintPipeline
+    StableDiffusionXLControlNetUnionInpaintPipeline,
+    TCDScheduler
 )
 from vllm import LLM, SamplingParams
 from fastapi import FastAPI, HTTPException
@@ -97,6 +98,7 @@ class FurnitureItem(BaseModel):
     caption: FurnitureDescription
     mask: str = Field(..., description="Base64 encoded mask image")
     box: str = Field(..., description="Base64 encoded mask image")
+    furniture_image: str = Field(..., description="Base64 encoded furniture image")
 
 class CaptionResponse(BaseModel):
     furniture: Dict[str, FurnitureItem]
@@ -105,7 +107,6 @@ class ModelManager:
     def __init__(self):
         self._pipeline_control = None
         self._pipeline_inpaint = None
-        self._pipeline_replace = None
         self._prompts = None
         self._depth = None
         self._llm = None
@@ -113,6 +114,8 @@ class ModelManager:
         self._dino = None
         self._current_image = None
         self._current_depth = None
+        self._black_image = Image.new("RGB", (1024, 1024), (0, 0, 0))
+        self._enchancment_prompt = "masterpiece, professional lighting, realistic materials, highly detailed"
 
     def set_current_image(self, image):
         self._current_image = image
@@ -142,17 +145,6 @@ class ModelManager:
                     variant="fp16",
                 ).to("cuda")
 
-                # self._pipeline_control = StableDiffusionXLControlNetPipeline.from_pretrained(
-                #     #"SG161222/RealVisXL_V5.0_Lightning",
-                #     "RunDiffusion/Juggernaut-XL-v9",
-                #     #"SG161222/RealVisXL_V3.0_Turbo",
-                #     #"stabilityai/sdxl-turbo",
-                #     #"stabilityai/stable-diffusion-xl-base-1.0",
-                #     torch_dtype=torch.float16,
-                #     variant="fp16",
-                #     controlnet=controlnet,
-                # ).to("cuda")
-
                 vae = AutoencoderKL.from_pretrained("madebyollin/sdxl-vae-fp16-fix", 
                                                     torch_dtype=torch.float16).to("cuda")
 
@@ -163,22 +155,24 @@ class ModelManager:
                     torch_dtype=torch.float16,
                     variant="fp16"
                 ).to("cuda")
-        
 
-                self._pipeline_inpaint.scheduler = LCMScheduler.from_config(
-                    self._pipeline_inpaint.scheduler.config
+                self._pipeline_inpaint.load_ip_adapter(
+                    "h94/IP-Adapter",
+                    subfolder="sdxl_models",
+                    weight_name="ip-adapter_sdxl_vit-h.safetensors",
+                    image_encoder_folder="models/image_encoder",
                 )
 
-                self._pipeline_inpaint.load_lora_weights("latent-consistency/lcm-lora-sdxl")
+                self._pipeline_inpaint.set_ip_adapter_scale(0.4)
+        
+                self._pipeline_inpaint.scheduler = TCDScheduler.from_config(
+                    self._pipeline_inpaint.scheduler.config
+                )
+                self._pipeline_inpaint.load_lora_weights("h1t/TCD-SDXL-LoRA")
+
                 self._pipeline_inpaint.fuse_lora()
 
-
                 self._pipeline_control = StableDiffusionXLControlNetUnionPipeline.from_pipe(
-                    self._pipeline_inpaint,
-                    torch_dtype=torch.float16
-                ).to("cuda")
-   
-                self._pipeline_replace = StableDiffusionXLControlNetUnionInpaintPipeline.from_pipe(
                     self._pipeline_inpaint,
                     torch_dtype=torch.float16
                 ).to("cuda")
@@ -198,10 +192,6 @@ class ModelManager:
         return self._pipeline_control
     
     @property
-    def pipeline_replace(self):
-        return self._pipeline_replace
-    
-    @property
     def depth(self):
         if self._depth is None:
             logger.info("Initializing Depth model")
@@ -216,7 +206,7 @@ class ModelManager:
             self._llm = LLM(
                 model="filnow/qwen-merged-lora",
                 dtype=torch.bfloat16,
-                gpu_memory_utilization=0.4,
+                gpu_memory_utilization=0.35,
                 max_model_len=1024,
                 max_num_seqs=1,
             )
@@ -353,7 +343,6 @@ def search_similar_items(req: SearchRequest, top_k: int = 5):
     combined_results.sort(key=lambda x: x["distance"], reverse=True)
     return {"results": combined_results[:top_k]}
 
-# Add this to your FastAPI backend
 @app.post("/proxy-image")
 async def proxy_image(request: dict):
     url = request.get("url")
@@ -369,9 +358,9 @@ async def proxy_image(request: dict):
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         
-        # Convert image to base64
         image_base64 = base64.b64encode(response.content).decode('utf-8')
         return {"image": image_base64}
+    
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching image: {str(e)}")
 
@@ -383,10 +372,8 @@ async def scrape_images(request: URLRequest):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
     }
     response = requests.get(url, headers=headers)
-
     if response.status_code == 200:
         soup = BeautifulSoup(response.content, 'html.parser')
-        
         gallery_div = soup.find('div', class_='css-bbh9aa elvndys0')
         if gallery_div:
             image_tags = gallery_div.find_all('img')
@@ -411,11 +398,8 @@ async def generate_inpaint(request: StyleRequest):
                     detail="Original image and depth map must be generated first"
             )
             
-            model_manager.pipeline_inpaint.unload_ip_adapter()
-            
             base_prompt = request.style
-            enhancement_prompt = "masterpiece, professional lighting, realistic materials, highly detailed"
-            full_prompt = f"{base_prompt}, {enhancement_prompt}"
+            full_prompt = f"{base_prompt}, {model_manager._enchancment_prompt}"
             image = ImageUtils.decode_image(request.style_image)
 
             seed = torch.randint(0, 100000, (1,)).item()
@@ -432,13 +416,16 @@ async def generate_inpaint(request: StyleRequest):
                 negative_prompt=negative_prompt,
                 image=model_manager._current_image,
                 mask_image=blured_image,
-                num_inference_steps=8,
+                num_inference_steps=5,
                 control_image=[model_manager._current_depth],
                 guidance_scale=1.5,
-                generator=torch.Generator(device="cuda"),
+                generator=torch.Generator(device="cuda").manual_seed(seed),
                 controlnet_conditioning_scale=0.7,
                 control_guidance_end=0.7,
-                control_mode=[1]
+                control_mode=[1],
+                eta=0.3,
+                strength=0.99,
+                ip_adapter_image=model_manager._black_image
             )
 
             generated_image = ImageUtils.encode_image(output.images[0])
@@ -462,66 +449,54 @@ async def generate_delete(request: StyleRequest):
     with cuda_memory_manager():
         try:
             if model_manager._current_image is None or model_manager._current_depth is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Original image and depth map must be generated first"
-                )
-            
-            model_manager.pipeline_inpaint.unload_ip_adapter()
+                raise HTTPException(status_code=400, detail="Original image and depth map must be generated first")
 
-            prompt = "masterpiece, professional lighting, realistic materials, highly detailed"
+            mask_image = ImageUtils.decode_image(request.style_image)
+            padded_mask = ImageUtils.add_mask_padding(mask_image, padding=64)
 
-            image = ImageUtils.decode_image(request.style_image)
+            blurred_mask = padded_mask.filter(ImageFilter.GaussianBlur(radius=15))  
+            binary_mask = blurred_mask.point(lambda x: 0 if x > 127 else 255) 
 
-            padded_mask = ImageUtils.add_mask_padding(image, padding=64)
-            
-            threshold = 127
-            binary_mask = padded_mask.point(lambda x: 0 if x > threshold else 255)
+            original_array = np.array(model_manager._current_image)
+            mask_array = np.array(binary_mask) == 0
+            original_array[mask_array] = [0, 0, 0]
+            result_image = Image.fromarray(original_array)
 
-            result_image = model_manager._current_image.copy()
+            mask_for_stats = padded_mask.convert("L")  # Ensure single-channel
+            inverted_mask = ImageOps.invert(mask_for_stats)  # Black (masked) -> white, white (unmasked) -> black
+            stats = ImageStat.Stat(model_manager._current_image, mask=inverted_mask)
+            avg_color = tuple(int(c) for c in stats.mean[:3])  # RGB average of unmasked area
+            neutral_fill = Image.new("RGB", model_manager._current_image.size, avg_color)
+            neutral_image = Image.composite(model_manager._current_image, neutral_fill, binary_mask)
 
-            original_data = model_manager._current_image.getdata()
-            mask_data = binary_mask.getdata()
-            result_data = []
+            negative_prompt = "furniture, objects, decorations, plants, clutter, people"
+            generator = torch.Generator(device="cuda").manual_seed(torch.randint(0, 100000, (1,)).item())
 
-            for i, pixel in enumerate(original_data):
-                if mask_data[i] == 0: 
-                    if isinstance(pixel, tuple):
-                        result_data.append((0, 0, 0))  
-                    else:
-                        result_data.append(0)  
-                else:
-                    result_data.append(pixel)  
-
-            result_image.putdata(result_data)
-
-            seed = torch.randint(0, 100000, (1,)).item()
-
-            negative_prompt = "furniture"
-            
             output = model_manager.pipeline_inpaint(
-                prompt=prompt,
+                prompt=model_manager._enchancment_prompt,
                 negative_prompt=negative_prompt,
-                image=model_manager._current_image,
-                mask_image=padded_mask,
-                control_image=[result_image],
-                control_mode=[6],
-                num_inference_steps=7,  
-                guidance_scale=1.5,
-                generator=torch.Generator(device="cuda").manual_seed(seed),
+                image=neutral_image,  
+                mask_image=blurred_mask,
+                control_image=[result_image],  
+                control_mode=[7],
+                num_inference_steps=8,  
+                guidance_scale=1.5,    
+                generator=generator,
+                eta=0.3,               
+                strength=0.99,          
+                controlnet_conditioning_scale=1.0,  
+                ip_adapter_image=model_manager._black_image
             )
- 
+
             generated_image = ImageUtils.encode_image(output.images[0])
             del output
-            
+
             return StyleResponse(generated_image=generated_image)
 
         except Exception as e:
-            logger.error(f"Delete furniture generation failed: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Delete furniture generation failed: {str(e)}"
-            )
+            logger.error(f"Delete generation failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Delete generation failed: {str(e)}")
+
         
 @app.post(
     "/generate_replace",
@@ -536,72 +511,41 @@ async def generate_replace(request: ReplaceRequest):
                     status_code=400,
                     detail="Original image and depth map must be generated first"
             )
-
-            model_manager._pipeline_replace.load_ip_adapter(
-                    "h94/IP-Adapter",
-                    subfolder="sdxl_models",
-                    weight_name="ip-adapter_sdxl_vit-h.safetensors",
-                    image_encoder_folder="models/image_encoder",
-                )
-
-            model_manager._pipeline_replace.set_ip_adapter_scale(0.4)
+            response = requests.get(f"https://futuredesigner.blob.core.windows.net/futuredesigner1/{request.adapter_image}")
+            load_adapter_image = Image.open(io.BytesIO(response.content))
             
-            base_prompt = request.style
-            enhancement_prompt = "masterpiece, professional lighting, realistic materials, highly detailed"
-            full_prompt = f"{base_prompt}, {enhancement_prompt}"
+            full_prompt = f"{request.style}, {model_manager._enchancment_prompt}"
 
             mask_image = ImageUtils.decode_image(request.mask_image)
-
-            processor = IPAdapterMaskProcessor()
-            ip_masks = processor.preprocess(mask_image, height=1024, width=1024)
-
-            seed = torch.randint(0, 100000, (1,)).item()
-
             padded_mask = ImageUtils.add_mask_padding(mask_image, padding=30)
 
-            blured_image = model_manager.pipeline_inpaint.mask_processor.blur(padded_mask, blur_factor=15)
+            processor = IPAdapterMaskProcessor()
+            ip_masks = processor.preprocess(padded_mask, height=1024, width=1024)
 
-            threshold = 127
-            binary_mask = blured_image.point(lambda x: 0 if x > threshold else 255)
-
-            result_image = model_manager._current_image.copy()
-
-            original_data = model_manager._current_image.getdata()
-            mask_data = binary_mask.getdata()
-            result_data = []
-
-            for i, pixel in enumerate(original_data):
-                if mask_data[i] == 0: 
-                    if isinstance(pixel, tuple):
-                        result_data.append((0, 0, 0))  
-                    else:
-                        result_data.append(0)  
-                else:
-                    result_data.append(pixel)  
-
-            result_image.putdata(result_data)
-
-            adapter_image_path = f"https://futuredesigner.blob.core.windows.net/futuredesigner1/{request.adapter_image}"
-
-            response = requests.get(adapter_image_path)
-            load_adapter_image = Image.open(io.BytesIO(response.content))
+            binary_mask = padded_mask.point(lambda x: 0 if x > 127 else 255)
+            
+            original_array = np.array(model_manager._current_image)
+            mask_array = np.array(binary_mask) == 0
+            original_array[mask_array] = [0, 0, 0]
+            result_image = Image.fromarray(original_array)
 
             negative_prompt = "deformed, low quality, blurry, noise, grainy, duplicate, watermark, text, out of frame"
 
-            output = model_manager.pipeline_replace(
+            output = model_manager.pipeline_inpaint(
                 prompt=full_prompt,
                 negative_prompt=negative_prompt,
                 image=model_manager._current_image,
-                mask_image=blured_image,
-                num_inference_steps=8,
-                guidance_scale=1.5,
+                mask_image=padded_mask,
+                num_inference_steps=5,
+                guidance_scale=2.0,
                 ip_adapter_image=load_adapter_image,
-                generator=torch.Generator(device="cuda"),
-                denoising_end=1.0,
+                generator=torch.Generator(device="cuda").manual_seed(torch.randint(0, 100000, (1,)).item()),
+                strength=0.99,
                 cross_attention_kwargs={"ip_adapter_masks": ip_masks},
                 control_image=[result_image],
-                controlnet_conditioning_scale=0.7,
-                control_guidance_end=0.7,
+                controlnet_conditioning_scale=0.3,
+                control_guidance_end=0.3,
+                eta=0.3,
                 control_mode=[6]
             )
 
@@ -657,8 +601,6 @@ async def generate_style(request: StyleRequest):
                     status_code=400,
                     detail=f"Invalid style: {request.style}"
                 )
-            
-            model_manager.pipeline_control.unload_ip_adapter()
 
             output = model_manager.pipeline_control(
                 prompt=prompts[request.style],
@@ -666,12 +608,14 @@ async def generate_style(request: StyleRequest):
                 width=1024,
                 height=1024,
                 guidance_scale=1.5,
-                num_inference_steps=10,
+                num_inference_steps=7,
                 control_image=[model_manager._current_depth],
-                controlnet_conditioning_scale=0.7,
-                control_guidance_end=0.7,
+                controlnet_conditioning_scale=0.9,
+                control_guidance_end=0.9,
                 control_mode=[1],
                 generator=torch.Generator(device="cuda"),
+                eta=0.3,
+                ip_adapter_image=model_manager._black_image,
             )
 
             generated_image = ImageUtils.encode_image(output.images[0])
@@ -733,7 +677,8 @@ async def generate_response(request: CaptionRequest):
                 output_dict[f"furniture_{i}"] = FurnitureItem(
                     caption=caption,
                     mask=mask_encoded,
-                    box=box_encoded
+                    box=box_encoded,
+                    furniture_image=image_base64
                 )
 
             return CaptionResponse(furniture=output_dict)
