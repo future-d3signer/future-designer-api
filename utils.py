@@ -9,13 +9,13 @@ import cv2
 
 class ImageUtils:
     @staticmethod
-    def encode_image(image: Image.Image) -> str:
+    def encode_image(image: Image.Image, format="JPEG") -> str:
         buffered = io.BytesIO()
         # Handle both PIL Image and numpy array inputs
         if isinstance(image, (list, np.ndarray)):
             # Convert numpy array to PIL Image
             image = Image.fromarray(np.uint8(image))
-        image.save(buffered, format="JPEG")
+        image.save(buffered, format=format)
         return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
     @staticmethod

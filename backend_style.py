@@ -103,6 +103,18 @@ class FurnitureItem(BaseModel):
 class CaptionResponse(BaseModel):
     furniture: Dict[str, FurnitureItem]
 
+class TransparencyRequest(BaseModel):
+    furniture_image: str = Field(..., description="Base64 encoded furniture image with white background")
+
+class TransparencyResponse(BaseModel):
+    transparent_image: str = Field(..., description="Base64 encoded furniture image with transparent background")
+
+class CompositeRequest(BaseModel):
+    room_image: str  # Base64 encoded image
+    furniture_image: str  # Base64 encoded transparent PNG
+    position: Dict[str, int]  # {x: number, y: number}
+    size: Dict[str, int]  # {width: number, height: number}
+
 class ModelManager:
     def __init__(self):
         self._pipeline_control = None
@@ -418,7 +430,7 @@ async def generate_inpaint(request: StyleRequest):
                 mask_image=blured_image,
                 num_inference_steps=5,
                 control_image=[model_manager._current_depth],
-                guidance_scale=1.5,
+                guidance_scale=2.5,
                 generator=torch.Generator(device="cuda").manual_seed(seed),
                 controlnet_conditioning_scale=0.7,
                 control_guidance_end=0.7,
@@ -543,8 +555,7 @@ async def generate_replace(request: ReplaceRequest):
                 strength=0.99,
                 cross_attention_kwargs={"ip_adapter_masks": ip_masks},
                 control_image=[result_image],
-                controlnet_conditioning_scale=0.3,
-                control_guidance_end=0.3,
+                controlnet_conditioning_scale=1.0,
                 eta=0.3,
                 control_mode=[6]
             )
@@ -689,6 +700,96 @@ async def generate_response(request: CaptionRequest):
                 status_code=500,
                 detail=f"Caption generation failed: {str(e)}"
             )
+
+@app.post(
+    "/generate_transparency",
+    response_model=TransparencyResponse,
+    description="Generate transparent background for furniture image"
+)
+async def generate_transparency(request: TransparencyRequest):
+    with cuda_memory_manager():
+        try:
+            response = requests.get(f"https://futuredesigner.blob.core.windows.net/futuredesigner1/{request.furniture_image}")
+            image = Image.open(io.BytesIO(response.content))
+   
+            _, masks, _ = get_segementaion(
+                image,
+                model_manager.sam,
+                model_manager.dino
+            )
+            
+            # Check if furniture was detected
+            if len(masks) == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No furniture detected in the image"
+                )
+            
+            # Use the first mask (assuming the main furniture item)
+            mask_slice = masks[0, 0]
+            
+            # Convert image to RGBA to support transparency
+            rgba_image = image.convert("RGBA")
+            rgba_array = np.array(rgba_image)
+            
+            # Apply mask to alpha channel (255 for furniture, 0 for background)
+            mask_array = mask_slice.astype(bool)
+            rgba_array[:, :, 3] = np.where(mask_array, 255, 0)
+            
+            # Convert back to PIL Image
+            transparent_image = Image.fromarray(rgba_array, mode="RGBA")
+            
+            # Encode transparent image as PNG with transparency
+            transparent_image_base64 = ImageUtils.encode_image(transparent_image, format="PNG")
+            
+            return TransparencyResponse(transparent_image=transparent_image_base64)
+
+        except Exception as e:
+            logger.error(f"Transparency generation error: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Transparency generation failed: {str(e)}"
+            )
+        
+@app.post("/composite_furniture")
+async def composite_furniture(request: CompositeRequest):
+    try:
+        # Decode base64 images
+        room_img_data = base64.b64decode(request.room_image.split(",")[1])
+        furniture_img_data = base64.b64decode(request.furniture_image.split(",")[1])
+        
+        logger.info(f"Room image size: {len(room_img_data)} bytes")
+        logger.info(f"Furniture image size: {len(furniture_img_data)} bytes")
+        # Open images with PIL
+        room_img = Image.open(io.BytesIO(room_img_data))
+        furniture_img = Image.open(io.BytesIO(furniture_img_data))
+        
+        # Resize furniture
+        furniture_resized = furniture_img.resize(
+            (request.size["width"], request.size["height"]), 
+            Image.Resampling.LANCZOS
+        )
+        
+        # Create a new image with the same dimensions as room_img
+        result_img = room_img.copy()
+        
+        # Paste the furniture onto the room image at the specified position
+        # The transparent PNG will automatically handle the mask
+        result_img.paste(
+            furniture_resized,
+            (request.position["x"], request.position["y"]),
+            furniture_resized  # Use the furniture image itself as mask
+        )
+        
+        result_img.save("result.png")
+        # Convert the result back to base64
+        buffer = io.BytesIO()
+        result_img.save(buffer, format="PNG")
+        img_str = base64.b64encode(buffer.getvalue()).decode()
+        
+        return {"composited_image": f"data:image/png;base64,{img_str}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.on_event("startup")
 async def startup_event():
