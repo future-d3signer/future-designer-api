@@ -161,7 +161,8 @@ class ModelManager:
                                                     torch_dtype=torch.float16).to("cuda")
 
                 self._pipeline_inpaint = StableDiffusionXLControlNetUnionInpaintPipeline.from_pretrained(
-                    "SG161222/RealVisXL_V5.0", 
+                    #"SG161222/RealVisXL_V5.0",
+                    "RunDiffusion/Juggernaut-XL-v9", 
                     controlnet=controlnet,
                     vae=vae, 
                     torch_dtype=torch.float16,
@@ -753,43 +754,81 @@ async def generate_transparency(request: TransparencyRequest):
         
 @app.post("/composite_furniture")
 async def composite_furniture(request: CompositeRequest):
-    try:
-        # Decode base64 images
-        room_img_data = base64.b64decode(request.room_image.split(",")[1])
-        furniture_img_data = base64.b64decode(request.furniture_image.split(",")[1])
-        
-        logger.info(f"Room image size: {len(room_img_data)} bytes")
-        logger.info(f"Furniture image size: {len(furniture_img_data)} bytes")
-        # Open images with PIL
-        room_img = Image.open(io.BytesIO(room_img_data))
-        furniture_img = Image.open(io.BytesIO(furniture_img_data))
-        
-        # Resize furniture
-        furniture_resized = furniture_img.resize(
-            (request.size["width"], request.size["height"]), 
-            Image.Resampling.LANCZOS
-        )
-        
-        # Create a new image with the same dimensions as room_img
-        result_img = room_img.copy()
-        
-        # Paste the furniture onto the room image at the specified position
-        # The transparent PNG will automatically handle the mask
-        result_img.paste(
-            furniture_resized,
-            (request.position["x"], request.position["y"]),
-            furniture_resized  # Use the furniture image itself as mask
-        )
-        
-        result_img.save("result.png")
-        # Convert the result back to base64
-        buffer = io.BytesIO()
-        result_img.save(buffer, format="PNG")
-        img_str = base64.b64encode(buffer.getvalue()).decode()
-        
-        return {"composited_image": f"data:image/png;base64,{img_str}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    with cuda_memory_manager():
+        try:
+            # Decode base64 images
+            room_img_data = base64.b64decode(request.room_image.split(",")[1])
+            furniture_img_data = base64.b64decode(request.furniture_image.split(",")[1])
+            
+            # Open images with PIL
+            room_img = Image.open(io.BytesIO(room_img_data)).convert("RGB")
+            furniture_img = Image.open(io.BytesIO(furniture_img_data)).convert("RGBA")
+            
+            # Resize furniture
+            furniture_resized = furniture_img.resize(
+                (request.size["width"], request.size["height"]), 
+                Image.Resampling.LANCZOS
+            )
+            
+            # Create initial composite
+            initial_composite = room_img.copy()
+            
+            # Get furniture mask (alpha channel)
+            furniture_mask = furniture_resized.split()[3]
+            
+            # Paste the furniture onto the room image
+            initial_composite.paste(
+                furniture_resized.convert("RGB"),
+                (request.position["x"], request.position["y"]),
+                furniture_resized  # Use the furniture image itself as mask
+            )
+            
+            # Create a mask for diffusion blending
+            blend_mask = Image.new("L", room_img.size, 0)  # Black background
+            # Paint white where furniture should be blended
+            blend_mask.paste(
+                furniture_mask, 
+                (request.position["x"], request.position["y"])
+            )
+            
+            padded_mask = ImageUtils.add_mask_padding(blend_mask, padding=64)
+            # Generate depth map for the composite
+            depth = model_manager.depth(initial_composite)["depth"]
+            
+            padded_mask.save("pad.png")
+            depth.save("depth.png")
+            initial_composite.save("initial_composite.png")
+            # Define appropriate prompt for furniture blending
+            blend_prompt = "realistic lighting, seamless furniture integration, natural shadows, physically accurate placement"
+            negative_prompt = "unrealistic lighting, floating furniture, harsh edges, artificial shadows"
+            
+            # Use diffusion to blend the furniture
+            output = model_manager.pipeline_inpaint(
+                prompt=blend_prompt,
+                negative_prompt=negative_prompt,
+                image=initial_composite,
+                mask_image=padded_mask,
+                num_inference_steps=7,
+                guidance_scale=1.5,
+                control_image=[depth],
+                controlnet_conditioning_scale=0.7,
+                control_guidance_end=0.7,
+                control_mode=[1],
+                generator=torch.Generator(device="cuda").manual_seed(torch.randint(0, 100000, (1,)).item()),
+                strength=0.99,
+                eta=0.3,
+                ip_adapter_image=furniture_resized.convert("RGB"), 
+            )
+            
+            result_img = output.images[0]
+            
+            # Convert the result back to base64
+            result_base64 = ImageUtils.encode_image(result_img, format="PNG")
+            
+            return {"composited_image": f"data:image/png;base64,{result_base64}"}
+        except Exception as e:
+            logger.error(f"Furniture composition failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 @app.on_event("startup")
 async def startup_event():

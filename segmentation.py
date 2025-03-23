@@ -90,8 +90,8 @@ def segment_furniture(image, grounding_dino_model, predictor):
         model=grounding_dino_model,
         image=gd_image,
         caption="chair. sofa. table. bed.",
-        box_threshold=0.3,
-        text_threshold=0.3,
+        box_threshold=0.4,
+        text_threshold=0.4,
         device=DEVICE
     )
 
