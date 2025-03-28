@@ -8,6 +8,10 @@ import logging
 import requests
 import numpy as np
 
+from io import BytesIO
+from google import genai
+from google.genai import types
+
 
 from transformers import pipeline
 from PIL import Image, ImageStat, ImageFilter, ImageOps
@@ -387,9 +391,21 @@ async def scrape_images(request: URLRequest):
     response = requests.get(url, headers=headers)
     if response.status_code == 200:
         soup = BeautifulSoup(response.content, 'html.parser')
-        gallery_div = soup.find('div', class_='css-bbh9aa elvndys0')
+        gallery_div = soup.find('div', class_='css-j20qqd ev7r41z0')
+
+        if not gallery_div:
+        # Look for any div containing multiple images
+            image_containers = soup.find_all('div')
+            for container in image_containers:
+                images = container.find_all('img')
+                if len(images) > 5:  # If container has multiple images, it's likely a gallery
+                    gallery_div = container
+                    break
+            
+        logger.info(f"Gallery div: {gallery_div}")
         if gallery_div:
             image_tags = gallery_div.find_all('img')
+            logger.info(f"Image tags: {image_tags}")
             image_links = [img['src'] for img in image_tags if 'src' in img.attrs]
             return {"image_links": image_links}
         else:
@@ -429,7 +445,7 @@ async def generate_inpaint(request: StyleRequest):
                 negative_prompt=negative_prompt,
                 image=model_manager._current_image,
                 mask_image=blured_image,
-                num_inference_steps=5,
+                num_inference_steps=7,
                 control_image=[model_manager._current_depth],
                 guidance_scale=2.5,
                 generator=torch.Generator(device="cuda").manual_seed(seed),
@@ -475,34 +491,54 @@ async def generate_delete(request: StyleRequest):
             original_array[mask_array] = [0, 0, 0]
             result_image = Image.fromarray(original_array)
 
-            mask_for_stats = padded_mask.convert("L")  # Ensure single-channel
-            inverted_mask = ImageOps.invert(mask_for_stats)  # Black (masked) -> white, white (unmasked) -> black
-            stats = ImageStat.Stat(model_manager._current_image, mask=inverted_mask)
-            avg_color = tuple(int(c) for c in stats.mean[:3])  # RGB average of unmasked area
-            neutral_fill = Image.new("RGB", model_manager._current_image.size, avg_color)
-            neutral_image = Image.composite(model_manager._current_image, neutral_fill, binary_mask)
+            client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-            negative_prompt = "furniture, objects, decorations, plants, clutter, people"
-            generator = torch.Generator(device="cuda").manual_seed(torch.randint(0, 100000, (1,)).item())
+            text_input = ('Change black region to match the rest of the image')
 
-            output = model_manager.pipeline_inpaint(
-                prompt=model_manager._enchancment_prompt,
-                negative_prompt=negative_prompt,
-                image=neutral_image,  
-                mask_image=blurred_mask,
-                control_image=[result_image],  
-                control_mode=[7],
-                num_inference_steps=8,  
-                guidance_scale=1.5,    
-                generator=generator,
-                eta=0.3,               
-                strength=0.99,          
-                controlnet_conditioning_scale=1.0,  
-                ip_adapter_image=model_manager._black_image
+            response = client.models.generate_content(
+                model="gemini-2.0-flash-exp-image-generation",
+                contents=[text_input, result_image],
+                config=types.GenerateContentConfig(
+                response_modalities=['Text', 'Image']
+                )
             )
 
-            generated_image = ImageUtils.encode_image(output.images[0])
-            del output
+            for part in response.candidates[0].content.parts:
+                if part.text is not None:
+                    print(part.text)
+                elif part.inline_data is not None:
+                    image = Image.open(BytesIO(part.inline_data.data))
+            
+            generated_image = ImageUtils.encode_image(image)
+
+            # mask_for_stats = padded_mask.convert("L")  # Ensure single-channel
+            # inverted_mask = ImageOps.invert(mask_for_stats)  # Black (masked) -> white, white (unmasked) -> black
+            # stats = ImageStat.Stat(model_manager._current_image, mask=inverted_mask)
+            # avg_color = tuple(int(c) for c in stats.mean[:3])  # RGB average of unmasked area
+            # neutral_fill = Image.new("RGB", model_manager._current_image.size, avg_color)
+            # neutral_image = Image.composite(model_manager._current_image, neutral_fill, binary_mask)
+
+            # negative_prompt = "furniture, objects, decorations, plants, clutter, people"
+            # generator = torch.Generator(device="cuda").manual_seed(torch.randint(0, 100000, (1,)).item())
+
+            # output = model_manager.pipeline_inpaint(
+            #     prompt=model_manager._enchancment_prompt,
+            #     negative_prompt=negative_prompt,
+            #     image=neutral_image,  
+            #     mask_image=blurred_mask,
+            #     control_image=[result_image],  
+            #     control_mode=[7],
+            #     num_inference_steps=8,  
+            #     guidance_scale=1.5,    
+            #     generator=generator,
+            #     eta=0.3,               
+            #     strength=0.99,          
+            #     controlnet_conditioning_scale=1.0,  
+            #     ip_adapter_image=model_manager._black_image
+            # )
+
+            # generated_image = ImageUtils.encode_image(output.images[0])
+            # del output
 
             return StyleResponse(generated_image=generated_image)
 
@@ -527,42 +563,70 @@ async def generate_replace(request: ReplaceRequest):
             response = requests.get(f"https://futuredesigner.blob.core.windows.net/futuredesigner1/{request.adapter_image}")
             load_adapter_image = Image.open(io.BytesIO(response.content))
             
-            full_prompt = f"{request.style}, {model_manager._enchancment_prompt}"
+            #full_prompt = f"{request.style}, {model_manager._enchancment_prompt}"
 
             mask_image = ImageUtils.decode_image(request.mask_image)
             padded_mask = ImageUtils.add_mask_padding(mask_image, padding=30)
 
-            processor = IPAdapterMaskProcessor()
-            ip_masks = processor.preprocess(padded_mask, height=1024, width=1024)
+            blurred_mask = padded_mask.filter(ImageFilter.GaussianBlur(radius=15))  
+            binary_mask = blurred_mask.point(lambda x: 0 if x > 127 else 255) 
 
-            binary_mask = padded_mask.point(lambda x: 0 if x > 127 else 255)
-            
             original_array = np.array(model_manager._current_image)
             mask_array = np.array(binary_mask) == 0
             original_array[mask_array] = [0, 0, 0]
             result_image = Image.fromarray(original_array)
 
-            negative_prompt = "deformed, low quality, blurry, noise, grainy, duplicate, watermark, text, out of frame"
+            client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-            output = model_manager.pipeline_inpaint(
-                prompt=full_prompt,
-                negative_prompt=negative_prompt,
-                image=model_manager._current_image,
-                mask_image=padded_mask,
-                num_inference_steps=5,
-                guidance_scale=2.0,
-                ip_adapter_image=load_adapter_image,
-                generator=torch.Generator(device="cuda").manual_seed(torch.randint(0, 100000, (1,)).item()),
-                strength=0.99,
-                cross_attention_kwargs={"ip_adapter_masks": ip_masks},
-                control_image=[result_image],
-                controlnet_conditioning_scale=1.0,
-                eta=0.3,
-                control_mode=[6]
+            text_input = ('Change the black region to provided furniture image. For refrence there is orginal image and furniture image')
+            #text_input = ('Replace the black region with the provided furniture image, ensuring it blends seamlessly into the scene. Match lighting, shadows, and perspective to make the furniture appear naturally integrated in the original environment.')
+
+            response = client.models.generate_content(
+                model="gemini-2.0-flash-exp-image-generation",
+                contents=[text_input, load_adapter_image, model_manager._current_image, result_image],
+                config=types.GenerateContentConfig(
+                response_modalities=['Text', 'Image']
+                )
             )
 
-            generated_image = ImageUtils.encode_image(output.images[0])
-            del output
+            for part in response.candidates[0].content.parts:
+                if part.text is not None:
+                    print(part.text)
+                elif part.inline_data is not None:
+                    image = Image.open(BytesIO(part.inline_data.data))
+            
+            generated_image = ImageUtils.encode_image(image)
+            # processor = IPAdapterMaskProcessor()
+            # ip_masks = processor.preprocess(padded_mask, height=1024, width=1024)
+
+            # binary_mask = padded_mask.point(lambda x: 0 if x > 127 else 255)
+            
+            # original_array = np.array(model_manager._current_image)
+            # mask_array = np.array(binary_mask) == 0
+            # original_array[mask_array] = [0, 0, 0]
+            # result_image = Image.fromarray(original_array)
+
+            # negative_prompt = "deformed, low quality, blurry, noise, grainy, duplicate, watermark, text, out of frame"
+
+            # output = model_manager.pipeline_inpaint(
+            #     prompt=full_prompt,
+            #     negative_prompt=negative_prompt,
+            #     image=model_manager._current_image,
+            #     mask_image=padded_mask,
+            #     num_inference_steps=5,
+            #     guidance_scale=2.0,
+            #     ip_adapter_image=load_adapter_image,
+            #     generator=torch.Generator(device="cuda").manual_seed(torch.randint(0, 100000, (1,)).item()),
+            #     strength=0.99,
+            #     cross_attention_kwargs={"ip_adapter_masks": ip_masks},
+            #     control_image=[result_image],
+            #     controlnet_conditioning_scale=1.0,
+            #     eta=0.3,
+            #     control_mode=[6]
+            # )
+
+            # generated_image = ImageUtils.encode_image(output.images[0])
+            # del output
             
             return StyleResponse(generated_image=generated_image)
 
@@ -572,6 +636,44 @@ async def generate_replace(request: ReplaceRequest):
                 status_code=500,
                 detail=f"Inpaint generation failed: {str(e)}"
             )
+
+@app.post(
+    "/generate_clean",
+    response_model=DepthResponse,
+    description="Generate depth map from input image"
+)
+async def generate_clean(request: DepthRequest):
+    with cuda_memory_manager():
+        try:
+            image = ImageUtils.decode_image(request.source_image)
+
+            client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+            text_input = ('Remove all the furniture and objects from the image')
+
+            response = client.models.generate_content(
+                model="gemini-2.0-flash-exp-image-generation",
+                contents=[text_input, image],
+                config=types.GenerateContentConfig(
+                response_modalities=['Text', 'Image']
+                )
+            )
+
+            for part in response.candidates[0].content.parts:
+                if part.text is not None:
+                    print(part.text)
+                elif part.inline_data is not None:
+                    generated_image = ImageUtils.encode_image(Image.open(BytesIO(part.inline_data.data)))
+
+            return DepthResponse(depth_image=generated_image)
+            
+        except Exception as e:
+            logger.error(f"Depth generation error: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Depth generation failed: {str(e)}"
+            )
+
 
 @app.post(
     "/generate_depth",
@@ -794,10 +896,7 @@ async def composite_furniture(request: CompositeRequest):
             padded_mask = ImageUtils.add_mask_padding(blend_mask, padding=64)
             # Generate depth map for the composite
             depth = model_manager.depth(initial_composite)["depth"]
-            
-            padded_mask.save("pad.png")
-            depth.save("depth.png")
-            initial_composite.save("initial_composite.png")
+
             # Define appropriate prompt for furniture blending
             blend_prompt = "realistic lighting, seamless furniture integration, natural shadows, physically accurate placement"
             negative_prompt = "unrealistic lighting, floating furniture, harsh edges, artificial shadows"
