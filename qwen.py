@@ -10,6 +10,7 @@ from PIL import Image
 from datasets import load_dataset, Dataset, Features, Value, Image as ImageFeature
 from huggingface_hub import login
 from vllm import LLM, SamplingParams
+import os
 
 @dataclass
 class FurnitureMetadata:
@@ -158,6 +159,6 @@ if __name__ == "__main__":
         dataset_name="filnow/furniture-synthetic-dataset",
         output_repo="filnow/futniture-qwen2-vl-2b-lora",
         split_name="test",
-        hf_token="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"
+        hf_token=os.getenv("HF_TOKEN")
     )
 
