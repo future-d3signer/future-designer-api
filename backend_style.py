@@ -387,7 +387,7 @@ async def scrape_images(request: URLRequest):
     response = requests.get(url, headers=headers)
     if response.status_code == 200:
         soup = BeautifulSoup(response.content, 'html.parser')
-        gallery_div = soup.find('div', class_='css-bbh9aa elvndys0')
+        gallery_div = soup.find('div', {'data-sentry-element': 'GalleryMainContainer'})
         if gallery_div:
             image_tags = gallery_div.find_all('img')
             image_links = [img['src'] for img in image_tags if 'src' in img.attrs]
