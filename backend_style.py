@@ -49,10 +49,8 @@ class SearchRequest(BaseModel):
     style: str = ""
     color: str = ""
     material: str = ""
-    shape: str = ""
     details: str = ""
     room_type: str = ""
-    price_range: str = ""
 
 class URLRequest(BaseModel):
     url: str
@@ -68,10 +66,8 @@ class FurnitureDescription(BaseModel):
     style: str
     color: str
     material: str
-    shape: str
     details: str
     room_type: str
-    price_range: str
 
 class CaptionRequest(BaseModel):
     source_image: str = Field(..., description="Base64 encoded image data")
@@ -161,8 +157,8 @@ class ModelManager:
                                                     torch_dtype=torch.float16).to("cuda")
 
                 self._pipeline_inpaint = StableDiffusionXLControlNetUnionInpaintPipeline.from_pretrained(
-                    #"SG161222/RealVisXL_V5.0",
-                    "RunDiffusion/Juggernaut-XL-v9", 
+                    "SG161222/RealVisXL_V5.0",
+                    #"RunDiffusion/Juggernaut-XL-v9", 
                     controlnet=controlnet,
                     vae=vae, 
                     torch_dtype=torch.float16,
@@ -795,9 +791,6 @@ async def composite_furniture(request: CompositeRequest):
             # Generate depth map for the composite
             depth = model_manager.depth(initial_composite)["depth"]
             
-            padded_mask.save("pad.png")
-            depth.save("depth.png")
-            initial_composite.save("initial_composite.png")
             # Define appropriate prompt for furniture blending
             blend_prompt = "realistic lighting, seamless furniture integration, natural shadows, physically accurate placement"
             negative_prompt = "unrealistic lighting, floating furniture, harsh edges, artificial shadows"
