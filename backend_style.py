@@ -352,7 +352,7 @@ def search_similar_items(req: SearchRequest, top_k: int = 5):
     combined_results.sort(key=lambda x: x["distance"], reverse=True)
     return {"results": combined_results[:top_k]}
 
-@app.post("/proxy-image")
+@app.post("/utility/proxy-image")
 async def proxy_image(request: dict):
     url = request.get("url")
     if not url:
@@ -374,7 +374,7 @@ async def proxy_image(request: dict):
         raise HTTPException(status_code=500, detail=f"Error fetching image: {str(e)}")
 
 
-@app.post("/scrape-images")
+@app.post("/utility/scrape-images")
 async def scrape_images(request: URLRequest):
     url = request.url
     headers = {
@@ -394,7 +394,7 @@ async def scrape_images(request: URLRequest):
         raise HTTPException(status_code=response.status_code, detail="Failed to retrieve the webpage.")
 
 @app.post(
-    "/generate_inpaint",
+    "/image-generation/generate_inpaint",
     response_model=StyleResponse,
     description="Generate inpainted image from input image"
 )
@@ -432,7 +432,7 @@ async def generate_inpaint(request: StyleRequest):
                 controlnet_conditioning_scale=0.7,
                 control_guidance_end=0.7,
                 control_mode=[1],
-                eta=0.3,
+                eta=0.3,image=depth_image_pil, # Pass depth PIL directly
                 strength=0.99,
                 ip_adapter_image=model_manager._black_image
             )
@@ -450,7 +450,7 @@ async def generate_inpaint(request: StyleRequest):
             )
 
 @app.post(
-    "/generate_delete",
+    "/image-generation/generate_delete",
     response_model=StyleResponse,
     description="Generate inpainted image from input image"
 )
@@ -508,7 +508,7 @@ async def generate_delete(request: StyleRequest):
 
         
 @app.post(
-    "/generate_replace",
+    "/image-generation/generate_replace",
     response_model=StyleResponse,
     description="Generate inpainted image from input image"
 )
@@ -570,7 +570,7 @@ async def generate_replace(request: ReplaceRequest):
             )
 
 @app.post(
-    "/generate_depth",
+    "/image-analysis/generate_depth",
     response_model=DepthResponse,
     description="Generate depth map from input image"
 )
@@ -596,7 +596,7 @@ async def generate_depth(request: DepthRequest):
                 detail=f"Depth generation failed: {str(e)}"
             )
 @app.post(
-    "/generate_style",
+    "/image-generation/generate_style",
     response_model=StyleResponse,
     description="Generate styled image from depth map"
 )
@@ -639,7 +639,7 @@ async def generate_style(request: StyleRequest):
             )
         
 @app.post(
-    "/generate_captions",
+    "/image-analysis/generate_captions",
     response_model=CaptionResponse,
     description="Generate furniture descriptions from input image"
 )
@@ -699,7 +699,7 @@ async def generate_response(request: CaptionRequest):
             )
 
 @app.post(
-    "/generate_transparency",
+    "/image-analysis/generate_transparency",
     response_model=TransparencyResponse,
     description="Generate transparent background for furniture image"
 )
@@ -748,7 +748,7 @@ async def generate_transparency(request: TransparencyRequest):
                 detail=f"Transparency generation failed: {str(e)}"
             )
         
-@app.post("/composite_furniture")
+@app.post("/utility/composite_furniture")
 async def composite_furniture(request: CompositeRequest):
     with cuda_memory_manager():
         try:
