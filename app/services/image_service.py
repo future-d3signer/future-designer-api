@@ -21,17 +21,19 @@ from vllm import SamplingParams
 class ImageService:
     def __init__(self, model_provider: ModelProvider):
         self.model_provider = model_provider
-        # Pre-fetch models to avoid lazy loading during request, if preferred
-        # self.model_provider.get_diffusion_pipelines() 
-        # self.model_provider.get_depth_estimator()
-        # ... etc. Or let them lazy load on first use.
-
+        #Comment to lazdy note
+        self.model_provider.get_diffusion_pipelines() 
+        self.model_provider.get_depth_estimator()
+        self.model_provider.get_sam_predictor()
+        self.model_provider.get_dino_model()
+        self.model_provider.get_vlm_model()
+        
     def generate_depth_map(self, source_image_b64: str) -> tuple[Image.Image, Image.Image, str]:
         image = ImageUtils.decode_image(source_image_b64).resize((1024, 1024))
         depth_estimator = self.model_provider.get_depth_estimator()
         depth_pil = depth_estimator(image)["depth"]
         depth_b64 = ImageUtils.encode_image(depth_pil)
-        return image, depth_pil, depth_b64 # Return PIL images for potential chaining
+        return image, depth_pil, depth_b64 
 
     def generate_styled_image(self, style_key: str, depth_image_pil: Image.Image) -> str:
         prompts = self.model_provider.get_prompts()
@@ -45,7 +47,7 @@ class ImageService:
             negative_prompt=prompts["negative"],
             width=1024, height=1024,
             guidance_scale=1.5, num_inference_steps=7,
-            control_image=[depth_image_pil], # This seems to be what you intended from original code
+            control_image=[depth_image_pil], 
             controlnet_conditioning_scale=0.9, control_guidance_end=0.9,
             control_mode=[1], generator=torch.Generator(device="cuda"), eta=0.3,
             ip_adapter_image=self.model_provider.black_image,
@@ -58,18 +60,10 @@ class ImageService:
                          orginal_image_pil:Image.Image, mask_image_pil: Image.Image) -> str:
         full_prompt = f"{base_prompt}, {self.model_provider.enhancement_prompt}"
         
-        # Padded mask and blur logic from your original endpoint
         padded_mask = ImageUtils.add_mask_padding(mask_image_pil, padding=30)
         
         _, pipeline_inpaint = self.model_provider.get_diffusion_pipelines()
-        # blured_image = pipeline_inpaint.mask_processor.blur(padded_mask, blur_factor=15)
-        # The original code for blured_image seems to use a method not directly on pipeline_inpaint
-        # Assuming mask_processor is accessible or you have a utility for it.
-        # For now, let's assume padded_mask is used directly or you handle blur:
-        # This line was: blured_image = model_manager.pipeline_inpaint.mask_processor.blur(padded_mask, blur_factor=15)
-        # If pipeline_inpaint.mask_processor is not available, you'll need to adjust.
-        # Let's assume IPAdapterMaskProcessor can be instantiated if needed, or that blur is done by ImageUtils
-        processor = IPAdapterMaskProcessor() # Or get from pipeline if available
+        processor = IPAdapterMaskProcessor() 
         blured_image = processor.blur(padded_mask, blur_factor=15)
 
 
@@ -80,7 +74,7 @@ class ImageService:
             prompt=full_prompt,
             negative_prompt=negative_prompt,
             image=orginal_image_pil,
-            mask_image=blured_image, # This was `padded_mask` in original, ensure consistency
+            mask_image=blured_image, 
             num_inference_steps=5,
             control_image=[depth_image_pil],
             guidance_scale=2.5,
@@ -97,18 +91,13 @@ class ImageService:
         return generated_image_b64
 
     def generate_delete(self, orginal_image_pil: Image.Image, box_image_pil: Image.Image) -> str:
-        # ... (logic from your /generate_delete endpoint) ...
-        # Remember to use self.model_provider to get models
-        # e.g., _, pipeline_inpaint = self.model_provider.get_diffusion_pipelines()
-        # The state of original_image_pil and depth_image_pil must be passed in.
         padded_mask = ImageUtils.add_mask_padding(box_image_pil, padding=64)
 
         blurred_mask = padded_mask.filter(ImageFilter.GaussianBlur(radius=15))  
         binary_mask_pil = blurred_mask.point(lambda x: 0 if x > 127 else 255) 
 
         original_array = np.array(orginal_image_pil)
-        # Careful with binary_mask_pil for direct array comparison, ensure it's correctly formatted
-        # Convert binary_mask_pil to a boolean mask array
+        
         mask_array_for_zeroing = np.array(binary_mask_pil.convert("L")) == 0 # 0 is black (masked)
         
         original_array_copy = original_array.copy()
@@ -133,7 +122,7 @@ class ImageService:
             image=neutral_image,  
             mask_image=blurred_mask, # The mask for inpainting
             control_image=[result_image_for_control],  
-            control_mode=[7], # Check what mode 7 means
+            control_mode=[7], # Refinment mode
             num_inference_steps=8, guidance_scale=1.5, generator=generator,
             eta=0.3, strength=0.99, controlnet_conditioning_scale=1.0,  
             ip_adapter_image=self.model_provider.black_image
