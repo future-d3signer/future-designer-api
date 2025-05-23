@@ -1,7 +1,7 @@
-import os
 from pymilvus import MilvusClient, model
 from app.core.config import settings
 from app.schemas.search import SearchRequest # Assuming you moved SearchRequest here
+
 
 class MilvusService:
     def __init__(self):
@@ -20,34 +20,54 @@ class MilvusService:
         vector_color = self.embedding_fn.encode_queries([req.color])[0].tolist()
     
 
-        search_params = [
-            ("vector_style", vector_style),
-            ("vector_color", vector_color), # Assuming other fields might be direct filters or need encoding
-            ("vector_material", vector_material),
-            ("vector_details", vector_details),
-        ]
-        
-        combined_results = []
-        # Simplified search loop example
-        for anns_field, data_vector in search_params:
-            if not data_vector: continue # Skip if empty query for a field
-            
-            # Ensure data_vector is list of lists for Milvus search
-            search_data = [data_vector] if isinstance(data_vector[0], float) else data_vector
+        search_results_style = self.client.search(
+            collection_name=self.collection_name,
+            data=[vector_style],
+            anns_field="vector_style",
+            limit=top_k,
+            filter=f'type == "{req.type}"',
+            output_fields=["columns", "image_name"],
+        )
 
-            results = self.client.search(
-                collection_name=self.collection_name,
-                data=search_data, # Milvus expects list of query vectors
-                anns_field=anns_field,
-                limit=top_k,
-                filter=f'type == "{req.type}"',
-                output_fields=["columns", "image_name"], # Adjust as needed
-            )
-            for hit_list in results: # results is a list of lists of hits
-                for hit in hit_list:
-                    combined_results.append(
-                        {"id": hit["id"], "distance": hit["distance"], "entity": hit["entity"]}
-                    )
+        search_results_color = self.client.search(
+            collection_name=self.collection_name,
+            data=[vector_color],
+            anns_field="vector_color",
+            limit=top_k,
+            filter=f'type == "{req.type}"',
+            output_fields=["columns", "image_name"],
+        )
+
+        search_results_material = self.client.search(
+            collection_name=self.collection_name,
+            data=[vector_material],
+            anns_field="vector_material",
+            limit=top_k,
+            filter=f'type == "{req.type}"',
+            output_fields=["columns", "image_name"],
+        )
+
+        search_results_details = self.client.search(
+            collection_name=self.collection_name,
+            data=[vector_details],
+            anns_field="vector_details",
+            limit=top_k,
+            filter=f'type == "{req.type}"',
+            output_fields=["columns", "image_name"],
+        )
+
+        # Combine results
+        combined_results = []
+        for result in [
+            search_results_style,
+            search_results_color,
+            search_results_material,
+            search_results_details,
+        ]:
+            for hit in result[0]:
+                combined_results.append(
+                    {"id": hit["id"], "distance": hit["distance"], "entity": hit["entity"]}
+                )
         
         combined_results.sort(key=lambda x: x["distance"], reverse=True) # Or False for closer is better
         self.client.release_collection(self.collection_name) # Good practice
