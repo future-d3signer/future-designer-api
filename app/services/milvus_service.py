@@ -6,7 +6,7 @@ from app.schemas.search import SearchRequest # Assuming you moved SearchRequest 
 class MilvusService:
     def __init__(self):
         self.client = MilvusClient(uri=settings.MILVUS_URL, token=settings.MILVUS_TOKEN)
-        self.collection_name = "furniture_synthetic_dataset_v2" # Or make this configurable
+        self.collection_name = "furniture_synthetic_dataset_10k" # Or make this configurable
         self.embedding_fn = model.DefaultEmbeddingFunction()
         # Consider loading the collection once if it's always the same
         self.client.load_collection(self.collection_name)
