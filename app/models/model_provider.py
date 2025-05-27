@@ -96,7 +96,7 @@ class ModelProvider:
         if self._vlm_model is None:
             logger.info("Initializing LLM model...")
             self._vlm_model = LLM(
-                model="filnow/qwen-merged-lora",
+                model="filnow/furniture-caption-qwen-lora",
                 dtype=torch.bfloat16,
                 gpu_memory_utilization=0.35, 
                 max_model_len=1024,

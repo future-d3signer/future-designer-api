@@ -1,0 +1,334 @@
+{
+    "bed": {
+      "style": [
+        "scandinavian minimal",
+        "japanese zen",
+        "modern industrial",
+        "mid-century modern",
+        "contemporary luxe",
+        "art deco",
+        "bohemian",
+        "traditional",
+        "coastal",
+        "rustic modern",
+        "french provincial",
+        "bauhaus"
+      ],
+      "color": [
+        "warm walnut",
+        "bleached oak",
+        "matte black",
+        "cloud white",
+        "greige",
+        "espresso brown",
+        "navy blue",
+        "emerald green",
+        "rose gold",
+        "champagne",
+        "graphite",
+        "bronze",
+        "weathered gray"
+      ],
+      "material": [
+        "solid oak",
+        "american walnut",
+        "powder-coated steel",
+        "premium leather",
+        "performance velvet",
+        "bamboo",
+        "rattan",
+        "brass",
+        "natural fiber",
+        "reclaimed wood",
+        "marble inlay",
+        "woven textile"
+      ],
+      "shape": [
+        "low platform",
+        "floating frame",
+        "architectural panel",
+        "slim silhouette",
+        "cantilevered",
+        "four-poster",
+        "wingback",
+        "sleigh",
+        "curved",
+        "geometric",
+        "organic",
+        "modular"
+      ],
+      "details": [
+        "integrated LED lighting",
+        "hidden storage",
+        "adjustable headboard",
+        "USB charging ports",
+        "modular design",
+        "brass hardware",
+        "woven panels",
+        "tufted upholstery",
+        "carved details",
+        "inlaid patterns",
+        "smart features",
+        "suspended design"
+      ],
+      "room_type": [
+        "master bedroom",
+        "guest room",
+        "teen room",
+        "studio apartment",
+        "hotel suite",
+        "vacation home",
+        "penthouse",
+        "loft space"
+      ],
+      "price_range": [
+        "entry-level",
+        "mid-range",
+        "premium",
+        "luxury",
+        "ultra-luxury",
+        "custom"
+      ]
+    },
+    "sofa": {
+      "style": [
+        "organic modern",
+        "coastal minimal",
+        "scandinavian",
+        "italian modern",
+        "japanese minimal",
+        "art deco",
+        "classical",
+        "postmodern",
+        "industrial",
+        "memphis",
+        "biomorphic",
+        "brutalist"
+      ],
+      "color": [
+        "oatmeal",
+        "cloud gray",
+        "warm taupe",
+        "sage green",
+        "ivory white",
+        "charcoal",
+        "terracotta",
+        "deep teal",
+        "ochre",
+        "blush pink",
+        "midnight blue",
+        "burnt orange",
+        "olive"
+      ],
+      "material": [
+        "performance boucle",
+        "italian leather",
+        "belgian linen",
+        "premium wool blend",
+        "recycled velvet",
+        "mohair",
+        "cotton canvas",
+        "chenille",
+        "cork",
+        "woven rush",
+        "recycled polyester",
+        "sustainable leather"
+      ],
+      "shape": [
+        "curved sectional",
+        "floating back",
+        "modular system",
+        "track arm",
+        "channel-tufted",
+        "serpentine",
+        "asymmetric",
+        "convertible",
+        "nested",
+        "cloud-like",
+        "sculptural",
+        "tiered"
+      ],
+      "details": [
+        "down-wrapped cushions",
+        "memory foam support",
+        "removable covers",
+        "modular configuration",
+        "hidden recliners",
+        "contrast piping",
+        "quilted panels",
+        "floating base",
+        "integrated table",
+        "power outlets",
+        "adjustable components"
+      ],
+      "room_type": [
+        "dining room",
+        "living room",
+        "office",
+        "outdoor"
+      ],
+      "price_range": [
+        "entry-level",
+        "mid-range",
+        "premium",
+        "luxury"
+      ]
+    },
+    "chair": {
+      "style": [
+        "ergonomic modern",
+        "architectural",
+        "minimalist dining",
+        "sculptural accent",
+        "nordic modern",
+        "space age",
+        "organic modern",
+        "deconstructivist",
+        "streamline moderne",
+        "futuristic",
+        "biomimetic"
+      ],
+      "color": [
+        "natural ash",
+        "matte black",
+        "brushed brass",
+        "warm cognac",
+        "soft cream",
+        "copper",
+        "iridescent",
+        "ombre finish",
+        "metallic silver",
+        "pearlescent",
+        "patinated",
+        "gradient"
+      ],
+      "material": [
+        "molded plywood",
+        "recycled plastic",
+        "powder-coated steel",
+        "premium leather",
+        "FSC-certified oak",
+        "carbon fiber",
+        "bioplastic",
+        "woven metal",
+        "compressed felt",
+        "recycled aluminum",
+        "3D-printed composite"
+      ],
+      "shape": [
+        "organic curves",
+        "geometric minimal",
+        "ergonomic form",
+        "stackable design",
+        "cantilever",
+        "shell-like",
+        "suspended",
+        "transformable",
+        "nesting",
+        "folding",
+        "rotating",
+        "multi-functional"
+      ],
+      "details": [
+        "ergonomic lumbar",
+        "swivel base",
+        "weight-balanced",
+        "quick-assembly",
+        "contract grade",
+        "height adjustment",
+        "integrated footrest",
+        "magnetic cushions",
+        "toolless assembly",
+        "eco-certified"
+      ],
+      "room_type": [
+        "dining room",
+        "living room",
+        "office",
+        "outdoor"
+      ],
+      "price_range": [
+        "entry-level",
+        "mid-range",
+        "premium",
+        "luxury"
+      ]
+    },
+    "table": {
+      "style": [
+        "architectural modern",
+        "minimal scandinavian",
+        "organic modern",
+        "industrial minimal",
+        "japanese zen",
+        "brutalist",
+        "biomorphic",
+        "constructivist",
+        "high-tech",
+        "neo-primitive",
+        "parametric"
+      ],
+      "color": [
+        "blonde oak",
+        "smoked glass",
+        "white marble",
+        "matte black",
+        "natural walnut",
+        "oxidized steel",
+        "polished brass",
+        "colored glass",
+        "concrete gray",
+        "mixed materials"
+      ],
+      "material": [
+        "solid wood",
+        "tempered glass",
+        "carrara marble",
+        "powder-coated steel",
+        "reclaimed oak",
+        "composite stone",
+        "terrazzo",
+        "ceramic",
+        "nano-tech surface",
+        "recycled materials",
+        "living edge wood"
+      ],
+      "shape": [
+        "rounded rectangle",
+        "organic oval",
+        "perfect circle",
+        "boat-shaped",
+        "geometric",
+        "free-form",
+        "expandable",
+        "nesting",
+        "multi-level",
+        "reversible",
+        "transformable"
+      ],
+      "details": [
+        "mitred edges",
+        "integrated storage",
+        "extension system",
+        "cable management",
+        "adjustable height",
+        "embedded lighting",
+        "wireless charging",
+        "modular components",
+        "self-leveling",
+        "anti-scratch surface"
+      ],
+      "room_type": [
+        "dining room",
+        "living room",
+        "office",
+        "outdoor"
+      ],
+      "price_range": [
+        "entry-level",
+        "mid-range",
+        "premium",
+        "luxury"
+      ]
+    }
+  }
