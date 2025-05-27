@@ -2,6 +2,18 @@
 
 An AI-powered FastAPI service for furniture design and image processing, featuring advanced generative AI capabilities for interior design and room composition.
 
+## 🎥 Demo
+
+[![Future Designer API Demo](https://img.youtube.com/vi/NOlGHFNzzrM/0.jpg)](https://youtu.be/NOlGHFNzzrM)
+
+*Click to watch the demo video showcasing furniture detection, replacement, and room composition features*
+
+## 🌐 Live Demo
+
+Try the application online: **[Future Designer Web App](https://futuredesignerai.com/)**
+
+*Interactive web interface with a user-friendly frontend*
+
 ## ✨ Features
 
 - **🪑 Furniture Detection & Captioning**: Automatically detect and describe furniture in images using fine-tuned vision-language models with structured attribute extraction
