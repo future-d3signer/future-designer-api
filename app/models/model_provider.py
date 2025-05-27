@@ -1,18 +1,25 @@
-import torch
 import gc
 import json
+import torch
 import logging
-from PIL import Image
-from transformers import pipeline
-from diffusers import (
-    AutoencoderKL, ControlNetUnionModel,
-    StableDiffusionXLControlNetUnionPipeline,
-    StableDiffusionXLControlNetUnionInpaintPipeline, TCDScheduler
-)
+
 from vllm import LLM
-from groundingdino.util.inference import load_model as load_dino_model # alias
-from app.core.config import settings # Import your settings
-from app.utils.segmentation_utils import load_sam_predictor # New import
+from PIL import Image
+from app.core.config import settings 
+from transformers import (
+    pipeline,
+    AutoProcessor,
+    AutoModelForZeroShotObjectDetection
+)
+from diffusers import (
+    TCDScheduler,
+    AutoencoderKL,
+    ControlNetUnionModel,
+    StableDiffusionXLControlNetUnionPipeline,
+    StableDiffusionXLControlNetUnionInpaintPipeline
+)
+from app.utils.segmentation_utils import load_sam_predictor 
+
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +39,7 @@ class ModelProvider:
     def load_all_models(self):
         logger.info("Loading all ML models...")
         self.get_prompts()
-        self.get_diffusion_pipelines() # This will init both control and inpaint
+        self.get_diffusion_pipelines()
         self.get_depth_estimator()
         self.get_vlm_model()
         self.get_sam_predictor()
@@ -53,8 +60,7 @@ class ModelProvider:
     def get_diffusion_pipelines(self) -> tuple[StableDiffusionXLControlNetUnionPipeline, StableDiffusionXLControlNetUnionInpaintPipeline]:
         if self._pipeline_control is None or self._pipeline_inpaint is None:
             logger.info("Initializing diffusion pipelines...")
-            # ... (your pipeline loading logic from ModelManager.pipeline property)
-            # Ensure you use self._pipeline_control and self._pipeline_inpaint
+
             controlnet = ControlNetUnionModel.from_pretrained(
                 "OzzyGT/controlnet-union-promax-sdxl-1.0", torch_dtype=torch.float16, variant="fp16"
             ).to("cuda")
@@ -62,7 +68,7 @@ class ModelProvider:
             self._pipeline_inpaint = StableDiffusionXLControlNetUnionInpaintPipeline.from_pretrained(
                 "SG161222/RealVisXL_V5.0", controlnet=controlnet, vae=vae, torch_dtype=torch.float16, variant="fp16"
             ).to("cuda")
-            # ... rest of your inpaint setup ...
+           
             self._pipeline_inpaint.load_ip_adapter(
                     "h94/IP-Adapter",
                     subfolder="sdxl_models",
@@ -92,26 +98,24 @@ class ModelProvider:
             self._vlm_model = LLM(
                 model="filnow/qwen-merged-lora",
                 dtype=torch.bfloat16,
-                gpu_memory_utilization=0.35, # Adjust as needed
+                gpu_memory_utilization=0.35, 
                 max_model_len=1024,
-                max_num_seqs=1, # Be careful with this if you plan concurrent LLM requests
+                max_num_seqs=1
             )
         return self._vlm_model
 
-    def get_sam_predictor(self): # Renamed getter
+    def get_sam_predictor(self):
         if self._sam_predictor is None:
             logger.info("Initializing SAM predictor...")
-            self._sam_predictor = load_sam_predictor() # Call the new function
+            self._sam_predictor = load_sam_predictor() 
         return self._sam_predictor
 
     def get_dino_model(self):
         if self._dino_model is None:
             logger.info("Initializing DINO model...")
-            self._dino_model = load_dino_model(
-                settings.DINO_CONFIG_PATH,
-                settings.DINO_WEIGHTS_PATH
-            )
-        return self._dino_model
+            self._dino_model = AutoModelForZeroShotObjectDetection.from_pretrained("IDEA-Research/grounding-dino-base").to("cuda")
+            self._dino_processor = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
+        return self._dino_model, self._dino_processor
 
     def cleanup(self):
         logger.info("Cleaning up models...")
@@ -120,6 +124,7 @@ class ModelProvider:
         del self._depth_estimator
         del self._vlm_model
         del self._dino_model
+        del self._dino_processor
         del self._sam_predictor
         self._sam_predictor = None
         self._pipeline_control = None
@@ -127,6 +132,7 @@ class ModelProvider:
         self._depth_estimator = None
         self._vlm_model = None
         self._dino_model = None
+        self._dino_processor = None
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

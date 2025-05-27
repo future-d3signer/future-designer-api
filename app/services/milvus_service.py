@@ -1,74 +1,114 @@
-from pymilvus import MilvusClient, model
+import torch
+
 from app.core.config import settings
-from app.schemas.search import SearchRequest # Assuming you moved SearchRequest here
+from app.schemas.search import SearchRequest
+from sentence_transformers import SentenceTransformer
+from pymilvus import MilvusClient, AnnSearchRequest, WeightedRanker
 
 
 class MilvusService:
     def __init__(self):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.client = MilvusClient(uri=settings.MILVUS_URL, token=settings.MILVUS_TOKEN)
-        self.collection_name = "furniture_synthetic_dataset_10k" # Or make this configurable
-        self.embedding_fn = model.DefaultEmbeddingFunction()
-        # Consider loading the collection once if it's always the same
-        self.client.load_collection(self.collection_name)
+        self.embedding_fn = SentenceTransformer(settings.EMBEDING_MODEL_NAME, device=self.device)
+        self.client.load_collection(settings.MILVUS_COLLECTION_NAME)
+    
+    def normalize_vector(self, vector):
+        norm = sum(x*x for x in vector) ** 0.5
+        return [x/norm for x in vector] if norm > 0 else vector
 
     def search_similar(self, req: SearchRequest, top_k: int = 5) -> dict:
-        #self.client.load_collection(self.collection_name) # Or load in __init__ if always used
+        query_vectors = {}
+        weights = []
+        field_weights = {
+            "style": 1.0,
+            "color": 1.0,
+            "material": 0.8,
+            "details": 0.6,
+        }
 
-        vector_style = self.embedding_fn.encode_queries([req.style])[0].tolist()
-        vector_details = self.embedding_fn.encode_queries([req.details])[0].tolist()
-        vector_material = self.embedding_fn.encode_queries([req.material])[0].tolist()
-        vector_color = self.embedding_fn.encode_queries([req.color])[0].tolist()
-    
+        # Only process non-empty fields
+        if req.style:
+            vector = self.embedding_fn.encode([req.style])[0].tolist()
+            query_vectors["style"] = (
+                self.normalize_vector(vector),
+                "vector_style",
+            )
+            weights.append(field_weights["style"])
 
-        search_results_style = self.client.search(
-            collection_name=self.collection_name,
-            data=[vector_style],
-            anns_field="vector_style",
+        if req.color:
+            query_vectors["color"] = (
+                self.embedding_fn.encode([req.color])[0].tolist(),
+                "vector_color",
+            )
+            weights.append(field_weights["color"])
+
+        if req.material:
+            query_vectors["material"] = (
+                self.embedding_fn.encode([req.material])[0].tolist(),
+                "vector_material",
+            )
+            weights.append(field_weights["material"])
+
+        if req.details:
+            query_vectors["details"] = (
+                self.embedding_fn.encode([req.details])[0].tolist(),
+                "vector_details",
+            )
+            weights.append(field_weights["details"])
+
+        if not query_vectors:
+            return {"ids": [], "results": []}
+
+        base_param = {
+            "param": {
+                "metric_type": "IP",  
+                "params": {
+                    "nprobe": 32,  
+                    "ef": top_k * 8,  
+                },
+            },
+            "limit": 20,
+        }
+
+        if req.type:
+            base_param["expr"] = f'type == "{req.type}"'
+
+        search_requests = []
+        for vector_data in query_vectors.values():
+            vector, field_name = vector_data
+            search_param = {"data": [vector], "anns_field": field_name, **base_param}
+            search_requests.append(AnnSearchRequest(**search_param))
+
+        if len(weights) > 0:
+            weight_sum = sum(weights)
+            normalized_weights = [w / weight_sum for w in weights]
+            ranker = WeightedRanker(*normalized_weights)
+        else:
+            ranker = WeightedRanker(1.0)  
+
+        merged_results = self.client.hybrid_search(
+            collection_name=settings.MILVUS_COLLECTION_NAME,
+            reqs=search_requests,
+            ranker=ranker,
             limit=top_k,
-            filter=f'type == "{req.type}"',
             output_fields=["columns", "image_name"],
+            timeout=10,  
         )
 
-        search_results_color = self.client.search(
-            collection_name=self.collection_name,
-            data=[vector_color],
-            anns_field="vector_color",
-            limit=top_k,
-            filter=f'type == "{req.type}"',
-            output_fields=["columns", "image_name"],
-        )
+        results_list = []
 
-        search_results_material = self.client.search(
-            collection_name=self.collection_name,
-            data=[vector_material],
-            anns_field="vector_material",
-            limit=top_k,
-            filter=f'type == "{req.type}"',
-            output_fields=["columns", "image_name"],
-        )
-
-        search_results_details = self.client.search(
-            collection_name=self.collection_name,
-            data=[vector_details],
-            anns_field="vector_details",
-            limit=top_k,
-            filter=f'type == "{req.type}"',
-            output_fields=["columns", "image_name"],
-        )
-
-        # Combine results
-        combined_results = []
-        for result in [
-            search_results_style,
-            search_results_color,
-            search_results_material,
-            search_results_details,
-        ]:
-            for hit in result[0]:
-                combined_results.append(
-                    {"id": hit["id"], "distance": hit["distance"], "entity": hit["entity"]}
+        if merged_results and len(merged_results) > 0:
+            for hit in merged_results[0]:
+                results_list.append(
+                    {
+                        "id": hit["id"],
+                        "distance": hit["distance"],
+                        "entity": {
+                            "columns": hit["entity"]["columns"],
+                            "image_name": hit["entity"]["image_name"],
+                        },
+                    }
                 )
-        
-        combined_results.sort(key=lambda x: x["distance"], reverse=True) # Or False for closer is better
-        self.client.release_collection(self.collection_name) # Good practice
-        return {"results": combined_results[:top_k]}
+
+        return {"results": results_list[:top_k]}

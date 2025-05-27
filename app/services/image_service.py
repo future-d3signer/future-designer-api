@@ -1,27 +1,22 @@
-import torch
-import numpy as np
-from PIL import Image, ImageFilter, ImageOps, ImageStat
 import io
-import base64
+import torch
 import requests
+import numpy as np
 
-from app.models.model_provider import ModelProvider
-from app.schemas.image_processing import ( # Import your Pydantic models
-    DepthRequest, DepthResponse, StyleRequest, StyleResponse,
-    CaptionRequest, CaptionResponse, ReplaceRequest,
-    TransparencyRequest, TransparencyResponse, CompositeRequest
-)
-from app.utils.image_utils import ImageUtils # Assuming these are static methods
-from app.utils.caption_utils import CaptionUtils
-from app.utils.segmentation_utils import extract_furniture_segments_from_image  # Your existing function
-from diffusers.image_processor import IPAdapterMaskProcessor
 from vllm import SamplingParams
+from app.utils.image_utils import ImageUtils
+from app.utils.caption_utils import CaptionUtils
+from app.models.model_provider import ModelProvider
+from app.schemas.image_processing import FurnitureItem
+from PIL import Image, ImageFilter, ImageOps, ImageStat 
+from diffusers.image_processor import IPAdapterMaskProcessor
+from app.utils.segmentation_utils import extract_furniture_segments_from_image  
 
 
 class ImageService:
     def __init__(self, model_provider: ModelProvider):
         self.model_provider = model_provider
-        #Comment to lazdy note
+   
         self.model_provider.get_diffusion_pipelines() 
         self.model_provider.get_depth_estimator()
         self.model_provider.get_sam_predictor()
@@ -133,10 +128,7 @@ class ImageService:
 
 
     def generate_replace(self, style_prompt: str, orginal_image_pil:Image.Image, 
-                         mask_image_pil: Image.Image, adapter_image_name: str) -> str: # Pass original_image_pil and depth_image_pil
-        # ... (logic from your /generate_replace endpoint) ...
-        # Use self.model_provider, ImageUtils, etc.
-        # State like original_image_pil and depth_image_pil must be passed in.
+                         mask_image_pil: Image.Image, adapter_image_name: str) -> str:
         response = requests.get(f"https://futuredesigner.blob.core.windows.net/futuredesigner1/{adapter_image_name}")
         response.raise_for_status()
         load_adapter_image = Image.open(io.BytesIO(response.content))
@@ -171,10 +163,10 @@ class ImageService:
             generator=torch.Generator(device="cuda").manual_seed(torch.randint(0, 100000, (1,)).item()),
             strength=0.99,
             cross_attention_kwargs={"ip_adapter_masks": ip_masks},
-            control_image=[result_image_for_control], # This uses the modified original image
+            control_image=[result_image_for_control],
             controlnet_conditioning_scale=1.0,
             eta=0.3,
-            control_mode=[6] # Check what mode 6 means
+            control_mode=[6] 
         )
         generated_image_b64 = ImageUtils.encode_image(output.images[0])
         del output
@@ -184,11 +176,11 @@ class ImageService:
         image_pil = ImageUtils.decode_image(source_image_b64).resize((1024, 1024))
         
         sam_predictor = self.model_provider.get_sam_predictor() 
-        dino_model = self.model_provider.get_dino_model()
+        dino_model, dino_processor = self.model_provider.get_dino_model()
         llm = self.model_provider.get_vlm_model()
 
         segmented_pil_list, raw_sam_masks, dino_boxes = extract_furniture_segments_from_image(
-            image_pil, sam_predictor, dino_model
+            image_pil, sam_predictor, dino_model, dino_processor
         )
 
         sampling_params = SamplingParams(max_tokens=128, temperature=0.0)
@@ -202,25 +194,20 @@ class ImageService:
             box_image_np = np.zeros((1024, 1024), dtype=np.uint8)
             box_image_np[y0:y1, x0:x1] = 255
             
-            mask_slice_np = raw_sam_masks[i, 0] # Assuming masks is a tensor
+            mask_slice_np = raw_sam_masks[i, 0] 
             mask_image_np = (mask_slice_np * 255).astype(np.uint8)
             
             mask_encoded = ImageUtils.encode_image(mask_image_np)
             box_encoded = ImageUtils.encode_image(box_image_np)
             
-            # For VLLM, use generate, not chat, if it's a completion model
-            # llm.chat might be specific to a VLLM setup with chat templates
-            # For simplicity, assuming llm.chat is correct for your model
             llm_outputs = llm.chat(conversation, sampling_params=sampling_params)
             generated_text = llm_outputs[0].outputs[0].text
             del llm_outputs
 
             caption_data = CaptionUtils.parse_json_response(generated_text)
             
-            # Assuming FurnitureItem schema is defined
-            from app.schemas.image_processing import FurnitureItem # Place at top
             output_dict[f"furniture_{i}"] = FurnitureItem(
-                caption=caption_data, # caption_data should match FurnitureDescription schema
+                caption=caption_data, 
                 mask=mask_encoded,
                 box=box_encoded,
                 furniture_image=furniture_b64
@@ -229,16 +216,15 @@ class ImageService:
 
 
     def make_furniture_transparent(self, furniture_image_url_suffix: str) -> str:
-        # ... (logic from your /generate_transparency endpoint) ...
-        # Use self.model_provider, ImageUtils
         response = requests.get(f"https://futuredesigner.blob.core.windows.net/futuredesigner1/{furniture_image_url_suffix}")
         response.raise_for_status()
         image_pil = Image.open(io.BytesIO(response.content))
 
         sam_predictor = self.model_provider.get_sam_predictor()
-        dino_model = self.model_provider.get_dino_model()
+        dino_model, dino_processor = self.model_provider.get_dino_model()
+    
         _, raw_sam_masks, _ = extract_furniture_segments_from_image(
-            image_pil, sam_predictor, dino_model
+            image_pil, sam_predictor, dino_model, dino_processor
         )
         
         mask_slice = raw_sam_masks[0, 0]
@@ -257,7 +243,6 @@ class ImageService:
         position: dict, size: dict
     ) -> str:
         room_img = ImageUtils.decode_image(room_image_b64).convert("RGB")
-        # furniture_image_b64 is already transparent PNG from client or previous step
         furniture_img = ImageUtils.decode_image(furniture_image_b64).convert("RGBA")
         
         furniture_resized = furniture_img.resize((size["width"], size["height"]), Image.Resampling.LANCZOS)
@@ -295,6 +280,5 @@ class ImageService:
         del output
         
         result_b64 = ImageUtils.encode_image(result_img_pil, format="PNG")
-        # FastAPI will automatically make this JSON `{"composited_image": "data:image/png;base64,..."}`
-        # if you return a Pydantic model. If returning raw dict, format it yourself.
+
         return f"data:image/png;base64,{result_b64}"
