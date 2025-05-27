@@ -10,7 +10,7 @@ An AI-powered FastAPI service for furniture design and image processing, featuri
 
 ## 🌐 Live Demo
 
-Try the application online: **[Future Designer Web App](https://futuredesignerai.com/)**
+**Coming Soon!** application online: **[Future Designer Web App](https://futuredesignerai.com/)**
 
 *Interactive web interface with a user-friendly frontend*
 
