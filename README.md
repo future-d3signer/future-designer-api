@@ -65,7 +65,6 @@ An AI-powered FastAPI service for furniture design and image processing, featuri
 
 The API will be available at:
 - **API**: http://localhost:8000
-- **Interactive Docs**: http://localhost:8000/docs  
 
 ## 📖 Documentation
 
