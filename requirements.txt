@@ -16,4 +16,3 @@ torch==2.5.1
 transformers==4.48.0
 uvicorn==0.34.2
 vllm==0.6.6.post1
-
