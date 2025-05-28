@@ -54,11 +54,12 @@ An AI-powered FastAPI service for furniture design and image processing, featuri
    pip install -r requirements.txt
    ```
 
-4. **Install SAM2**
+4. **Install SAM2 outside repo directory**
    ```bash
+   cd .. 
    git clone https://github.com/facebookresearch/sam2.git && cd sam2
-   pip install -e .
-   cd ..
+   pip install -e . && cd ..
+   cd future-designer-api
    ```
 
 5. **Configure environment**
@@ -72,7 +73,7 @@ An AI-powered FastAPI service for furniture design and image processing, featuri
 
 6. **Run the API**
    ```bash
-   uvicorn app.main:app --reload
+   python run.py
    ```
 
 The API will be available at:

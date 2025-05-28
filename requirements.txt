@@ -16,3 +16,5 @@ torch==2.5.1
 transformers==4.48.0
 uvicorn==0.34.0
 vllm==0.6.6.post1
+flash-attn==2.7.3
+peft==0.14.0
