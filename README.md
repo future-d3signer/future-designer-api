@@ -10,7 +10,7 @@ An AI-powered FastAPI service for furniture design and image processing, featuri
 
 ## 🌐 Live Demo
 
-**Coming Soon!** application online: **[Future Designer Web App](https://futuredesignerai.com/)**
+**Coming Soon!** Application online: **[Future Designer Web App](https://futuredesignerai.com/)**
 
 *Interactive web interface with a user-friendly frontend*
 
@@ -45,8 +45,8 @@ An AI-powered FastAPI service for furniture design and image processing, featuri
 
 2. **Create virtual environment**
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   conda create -n future-designer python=3.11
+   conda activate future-designer
    ```
 
 3. **Install dependencies**
