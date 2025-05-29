@@ -1,56 +1,106 @@
 API Reference
 =============
 
-The Future Designer API provides REST endpoints for furniture design and image processing.
+The Future Designer API provides REST endpoints for furniture design and image processing using advanced AI models.
 
 Base URL: ``http://localhost:8000``
+
+Interactive Documentation: ``http://localhost:8000/docs``
 
 Endpoints Overview
 ------------------
 
-.. raw:: html
-
-   <div class="http-method post">POST</div>
-
-**/caption** - Generate furniture descriptions from images
+Image Analysis
+~~~~~~~~~~~~~~
 
 .. raw:: html
 
    <div class="http-method post">POST</div>
 
-**/style** - Apply style transfer to images
+**/image-analysis/generate_captions** - Analyze images to detect and describe furniture
 
 .. raw:: html
 
    <div class="http-method post">POST</div>
 
-**/depth** - Generate depth maps from images
+**/image-analysis/generate_depth** - Generate depth maps from room images
 
 .. raw:: html
 
    <div class="http-method post">POST</div>
 
-**/transparency** - Remove backgrounds from furniture images
+**/image-analysis/generate_transparency** - Remove backgrounds from furniture images
+
+Image Generation
+~~~~~~~~~~~~~~~~
 
 .. raw:: html
 
    <div class="http-method post">POST</div>
 
-**/composite** - Composite furniture into room scenes
+**/image-generation/generate_style** - Apply style transfer to create design variations
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+**/image-generation/generate_inpaint** - Inpaint areas of images with new content
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+**/image-generation/generate_delete** - Remove furniture from images
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+**/image-generation/generate_replace** - Replace furniture with new items
+
+Search & Utility
+~~~~~~~~~~~~~~~~
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+**/search** - Find similar furniture using vector search
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+**/utility/proxy-image** - Proxy external image URLs
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+**/utility/scrape-images** - Scrape image links from web pages
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+**/utility/composite_furniture** - Compose furniture into room scenes
 
 Detailed Endpoints
 ------------------
 
+Image Analysis Endpoints
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
 Furniture Caption Generation
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. raw:: html
 
    <div class="http-method post">POST</div>
 
-``/caption``
+``/image-analysis/generate_captions``
 
-Analyzes room images to detect and describe furniture items using AI.
+Analyzes room images to detect and describe furniture items using fine-tuned vision-language models with structured attribute extraction.
 
 **Request Body:**
 
@@ -83,54 +133,18 @@ Analyzes room images to detect and describe furniture items using AI.
    }
 
 .. note::
-   The API can detect multiple furniture items in a single image. Each item gets a unique identifier.
-
-Style Transfer
-~~~~~~~~~~~~~~
-
-.. raw:: html
-
-   <div class="http-method post">POST</div>
-
-``/style``
-
-Applies artistic style transfer to create design variations.
-
-**Request Body:**
-
-.. code-block:: json
-
-   {
-     "style_image": "base64_encoded_depth_image",
-     "style": "modern_minimalist"
-   }
-
-**Response:**
-
-.. code-block:: json
-
-   {
-     "generated_image": "base64_encoded_styled_image"
-   }
-
-**Available Styles:**
-
-- ``modern_minimalist``
-- ``scandinavian``
-- ``industrial``
-- ``vintage``
-- ``contemporary``
+   Uses fine-tuned vision-language models for accurate furniture detection with structured attribute extraction.
 
 Depth Map Generation
-~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^
 
 .. raw:: html
 
    <div class="http-method post">POST</div>
 
-``/depth``
+``/image-analysis/generate_depth``
 
-Generates depth maps for 3D scene understanding.
+Generates accurate depth maps for 3D scene understanding and spatial reasoning.
 
 **Request Body:**
 
@@ -149,18 +163,18 @@ Generates depth maps for 3D scene understanding.
    }
 
 .. tip::
-   Depth maps are useful for understanding spatial relationships in room layouts.
+   Depth maps enable precise spatial understanding for furniture placement and room composition.
 
 Background Removal
-~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^
 
 .. raw:: html
 
    <div class="http-method post">POST</div>
 
-``/transparency``
+``/image-analysis/generate_transparency``
 
-Removes backgrounds from furniture images to create transparent PNGs.
+Extract furniture with clean transparent backgrounds using advanced segmentation.
 
 **Request Body:**
 
@@ -179,18 +193,247 @@ Removes backgrounds from furniture images to create transparent PNGs.
    }
 
 .. warning::
-   Works best with furniture images that have clear, contrasting backgrounds.
+   Works best with furniture images that have clear subject-background separation.
 
-Room Composition
-~~~~~~~~~~~~~~~~
+Image Generation Endpoints
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Style Transfer
+^^^^^^^^^^^^^^
 
 .. raw:: html
 
    <div class="http-method post">POST</div>
 
-``/composite``
+``/image-generation/generate_style``
 
-Composites furniture items into room scenes with precise positioning.
+Apply artistic styles to furniture and rooms using depth-guided generation techniques.
+
+**Request Body:**
+
+.. code-block:: json
+
+   {
+     "depth_image_b64": "base64_encoded_depth_image",
+     "style": "modern"
+   }
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "generated_image": "base64_encoded_styled_image"
+   }
+
+**Available Styles:**
+
+- ``modern``
+- ``scandinavian``
+- ``industrial``
+- ``victorian"``
+- ``artdeco``
+- ``bohemian``
+
+Image Inpainting
+^^^^^^^^^^^^^^^^
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+``/image-generation/generate_inpaint``
+
+Fill masked regions with contextually appropriate content.
+
+**Request Body:**
+
+.. code-block:: json
+
+   {
+     "source_image": "base64_encoded_image",
+     "mask": "base64_encoded_mask_image",
+     "prompt": "modern sofa in living room"
+   }
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "inpainted_image": "base64_encoded_result"
+   }
+
+Object Deletion
+^^^^^^^^^^^^^^^
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+``/image-generation/generate_delete``
+
+Remove unwanted furniture from images with context-aware inpainting.
+
+**Request Body:**
+
+.. code-block:: json
+
+   {
+     "source_image": "base64_encoded_image",
+     "object_mask": "base64_encoded_deletion_mask"
+   }
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "result_image": "base64_encoded_image_without_object"
+   }
+
+Furniture Replacement
+^^^^^^^^^^^^^^^^^^^^^
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+``/image-generation/generate_replace``
+
+Intelligently replace existing furniture with new items while maintaining scene coherence.
+
+**Request Body:**
+
+.. code-block:: json
+
+   {
+     "room_image": "base64_encoded_room",
+     "target_mask": "base64_encoded_furniture_mask",
+     "replacement_prompt": "modern leather armchair"
+   }
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "replaced_image": "base64_encoded_result"
+   }
+
+Search & Utility Endpoints
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Vector Search
+^^^^^^^^^^^^^
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+``/search``
+
+Find similar furniture styles using AI-powered embeddings with weighted multi-field search.
+
+**Request Body:**
+
+.. code-block:: json
+
+   {
+     "query": "modern blue chair",
+     "limit": 10,
+     "filters": {
+       "category": "seating",
+       "style": "modern"
+     }
+   }
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "results": [
+       {
+         "id": "furniture_123",
+         "score": 0.95,
+         "metadata": {
+           "type": "chair",
+           "style": "modern",
+           "color": "blue"
+         }
+       }
+     ]
+   }
+
+Image Proxy
+^^^^^^^^^^^
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+``/utility/proxy-image``
+
+Proxy external image URLs for processing.
+
+**Request Body:**
+
+.. code-block:: json
+
+   {
+     "image_url": "https://example.com/furniture.jpg"
+   }
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "image_data": "base64_encoded_proxied_image"
+   }
+
+Web Scraping
+^^^^^^^^^^^^
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+``/utility/scrape-images``
+
+Extract image links from web pages.
+
+**Request Body:**
+
+.. code-block:: json
+
+   {
+     "url": "https://example.com/furniture-gallery",
+     "selector": ".product-image"
+   }
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "images": [
+       "https://example.com/image1.jpg",
+       "https://example.com/image2.jpg"
+     ]
+   }
+
+Room Composition
+^^^^^^^^^^^^^^^^
+
+.. raw:: html
+
+   <div class="http-method post">POST</div>
+
+``/utility/composite_furniture``
+
+Composite furniture into room scenes with precise positioning and scaling.
 
 **Request Body:**
 
@@ -200,7 +443,16 @@ Composites furniture items into room scenes with precise positioning.
      "room_image": "base64_encoded_room_image",
      "furniture_image": "base64_encoded_furniture_image",
      "position": {"x": 100, "y": 150},
-     "size": {"width": 200, "height": 180}
+     "scale": 0.8,
+     "blend_mode": "normal"
+   }
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "composite_image": "base64_encoded_result"
    }
 
 **Position Parameters:**
@@ -218,17 +470,17 @@ Composites furniture items into room scenes with precise positioning.
    * - y
      - integer
      - Vertical position in pixels from top edge
-   * - width
-     - integer
-     - Desired width of furniture in pixels
-   * - height
-     - integer
-     - Desired height of furniture in pixels
+   * - scale
+     - float
+     - Scaling factor (0.1 to 2.0)
+   * - blend_mode
+     - string
+     - Blending mode: normal, multiply, overlay
 
 Error Responses
 ---------------
 
-All endpoints may return the following error responses:
+All endpoints return standardized error responses:
 
 **400 Bad Request**
 
@@ -257,5 +509,58 @@ All endpoints may return the following error responses:
 .. code-block:: json
 
    {
-     "detail": "Internal processing error"
+     "detail": "Internal processing error occurred"
    }
+
+**503 Service Unavailable**
+
+.. code-block:: json
+
+   {
+     "detail": "AI model temporarily unavailable"
+   }
+
+Rate Limiting
+-------------
+
+The API implements rate limiting to ensure fair usage:
+
+- **Standard tier**: 100 requests per minute
+- **Analysis endpoints**: 10 requests per minute (due to GPU processing)
+- **Generation endpoints**: 5 requests per minute (due to high computational cost)
+
+Authentication
+--------------
+
+Currently, the API runs without authentication in development mode. Production deployments should implement proper API key authentication.
+
+SDK Examples
+------------
+
+**Python SDK Usage:**
+
+.. code-block:: python
+
+   import requests
+   import base64
+
+   # Initialize client
+   BASE_URL = "http://localhost:8000"
+
+   # Furniture detection
+   with open("room.jpg", "rb") as f:
+       image_data = base64.b64encode(f.read()).decode()
+
+   response = requests.post(f"{BASE_URL}/image-analysis/generate_captions", json={
+       "source_image": image_data
+   })
+
+   furniture_data = response.json()
+
+   # Style transfer
+   response = requests.post(f"{BASE_URL}/image-generation/generate_style", json={
+       "depth_image_b64": depth_image_b64,
+       "style": "modern"
+   })
+
+   styled_image = response.json()["generated_image"]
