@@ -1,0 +1,170 @@
+Bootstrap: docker
+From: nvidia/cuda:12.4.1-devel-ubuntu22.04
+
+%help
+    Apptainer container for the Future Designer API.
+    Base image includes CUDA 12.4.1 Toolkit.
+    Installs Miniconda, creates a Conda environment, and installs dependencies,
+    including PyTorch (cu124 compatible) and flash-attn.
+    The API (run.py) will be started when the container runs.
+    Milvus configuration should be provided via environment variables prefixed with APPTAINERENV_
+    (e.g., APPTAINERENV_MILVUS_URL).
+
+%post
+    # Set DEBIAN_FRONTEND to noninteractive to avoid prompts during apt-get install
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Update and install essential packages, including those for Miniconda installation
+    # and potentially for building other Python packages.
+    # The nvidia/cuda devel images usually have git and build-essential.
+    apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        curl \
+        wget \
+        bzip2 \
+        ca-certificates \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Install Miniconda
+    MINICONDA_INSTALLER="Miniconda3-py311_23.10.0-1-Linux-x86_64.sh"
+    CONDA_DIR="/opt/conda"
+    echo "Downloading Miniconda installer..."
+    wget --quiet https://repo.anaconda.com/miniconda/${MINICONDA_INSTALLER} -O /tmp/${MINICONDA_INSTALLER}
+    if [ $? -ne 0 ]; then
+        echo "Failed to download Miniconda."
+        exit 1
+    fi
+
+    echo "Installing Miniconda..."
+    /bin/bash /tmp/${MINICONDA_INSTALLER} -b -p ${CONDA_DIR}
+    if [ $? -ne 0 ]; then
+        echo "Failed to install Miniconda."
+        exit 1
+    fi
+    rm /tmp/${MINICONDA_INSTALLER}
+
+    # Make Conda available in this script
+    . ${CONDA_DIR}/etc/profile.d/conda.sh
+
+    # Define installation directories and environment name
+    APP_DIR="/opt/future-designer-api"
+    SAM2_DIR="/opt/sam2"
+    CONDA_ENV_NAME="future-designer"
+
+    echo "Cloning Future Designer API repository..."
+   
+    git clone https://github.com/future-d3signer/future-designer-api.git ${APP_DIR}
+    if [ ! -d "${APP_DIR}" ]; then
+        echo "Failed to clone Future Designer API repository."
+        exit 1
+    fi
+
+    echo "Creating Conda environment ${CONDA_ENV_NAME} with Python 3.11..."
+    conda create -n ${CONDA_ENV_NAME} python=3.11 -y
+    if [ $? -ne 0 ]; then
+        echo "Failed to create conda environment."
+        exit 1
+    fi
+
+    echo "Installing dependencies for Future Designer API from requirements.txt..."
+
+    conda run -n ${CONDA_ENV_NAME} pip install -r ${APP_DIR}/requirements.txt
+    if [ $? -ne 0 ]; then
+        echo "Failed to install Future Designer API dependencies from requirements.txt."
+        exit 1
+    fi
+
+    echo "Installing flash-attn==2.7.3..."
+ 
+    conda run -n ${CONDA_ENV_NAME} python -c "import torch; print(f'PyTorch version for flash-attn: {torch.__version__}')"
+    conda run -n ${CONDA_ENV_NAME} pip install flash-attn==2.7.3
+    if [ $? -ne 0 ]; then
+        echo "Failed to install flash-attn."
+        exit 1
+    fi
+
+    echo "Cloning SAM2 repository..."
+    git clone https://github.com/facebookresearch/sam2.git ${SAM2_DIR}
+    if [ ! -d "${SAM2_DIR}" ]; then
+        echo "Failed to clone SAM2 repository."
+        exit 1
+    fi
+
+    echo "Installing SAM2..."
+    conda run -n ${CONDA_ENV_NAME} pip install -e ${SAM2_DIR}
+    if [ $? -ne 0 ]; then
+        echo "Failed to install SAM2."
+        exit 1
+    fi
+
+    # Handling .env file:
+    if [ -f "${APP_DIR}/.env_example" ]; then
+        echo "Copying .env_example to .env"
+        cp "${APP_DIR}/.env_example" "${APP_DIR}/.env"
+    fi
+
+    echo "Cleaning up Conda cache and installer..."
+    conda clean -afy
+
+    echo "Build steps in %post completed."
+
+%environment
+    # Set environment variables for the container runtime
+    export MILVUS_URL=${APPTAINERENV_MILVUS_URL:-"your_milvus_endpoint_here"}
+    export MILVUS_TOKEN=${APPTAINERENV_MILVUS_TOKEN:-"your_milvus_token_here"}
+    export MILVUS_COLLECTION_NAME=${APPTAINERENV_MILVUS_COLLECTION_NAME:-"furniture_collection"}
+
+    export PYTHONUNBUFFERED=1
+
+    # Conda environment settings
+    export CONDA_DIR="/opt/conda"
+    export CONDA_ENV_NAME="future-designer"
+    export CONDA_DEFAULT_ENV="${CONDA_ENV_NAME}"
+    export PATH="${CONDA_DIR}/envs/${CONDA_ENV_NAME}/bin:${CONDA_DIR}/bin:${PATH}"
+    export LD_LIBRARY_PATH="${CONDA_DIR}/envs/${CONDA_ENV_NAME}/lib:${LD_LIBRARY_PATH}"
+
+    # CUDA specific environment variables are usually set by the nvidia/cuda base image.
+    # e.g. CUDA_HOME=/usr/local/cuda
+    #      PATH includes /usr/local/cuda/bin
+    #      LD_LIBRARY_PATH includes /usr/local/cuda/lib64
+    # If not, you might need to set them explicitly, for example:
+    # export CUDA_HOME=${CUDA_HOME:-"/usr/local/cuda"} # Or specific version /usr/local/cuda-12.4
+    # export PATH="${CUDA_HOME}/bin:${PATH}"
+    # export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}"
+
+
+%runscript
+    APP_DIR="/opt/future-designer-api"
+    CONDA_DIR="/opt/conda"
+    CONDA_ENV_NAME="future-designer"
+
+    cd "${APP_DIR}"
+
+    if [ -f "${CONDA_DIR}/etc/profile.d/conda.sh" ]; then
+        . "${CONDA_DIR}/etc/profile.d/conda.sh"
+        conda activate "${CONDA_ENV_NAME}"
+        if [ $? -ne 0 ]; then
+            echo "Failed to activate conda environment ${CONDA_ENV_NAME} in runscript."
+        fi
+    else
+        echo "WARNING: Conda profile script not found. Python from env might not be prioritized."
+    fi
+
+    echo "Starting Future Designer API..."
+    echo "  PyTorch version from runscript: $(python -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'PyTorch not found or error')"
+    echo "  CUDA available to PyTorch: $(python -c 'import torch; print(torch.cuda.is_available())' 2>/dev/null || echo 'PyTorch not found or error')"
+    echo "  Conda Environment: $CONDA_DEFAULT_ENV (should be ${CONDA_ENV_NAME})"
+    echo "  API will attempt to listen on http://localhost:8000 (accessible on host's port 8000)"
+    echo "  MILVUS_URL: $MILVUS_URL"
+    echo "  MILVUS_COLLECTION_NAME: $MILVUS_COLLECTION_NAME"
+
+    exec python run.py "$@"
+
+%labels
+    Author YourName
+    Version 1.2 # Incremented version
+    Description "Future Designer API with SAM2 and flash-attn (CUDA base)"

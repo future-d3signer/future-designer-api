@@ -170,11 +170,15 @@ The [`experiments/`](experiments/) directory contains research code, model train
 
 See the [experiments README](experiments/README.md) for detailed information about the synthetic furniture dataset and pre-trained models.
 
-### Docker
+### Apptainer (Singularity)
 ```bash
-# Build image
-docker build -t future-designer-api .
+# Build SIF container
+apptainer build future-designer-api.sif future-designer-api.def
 
 # Run container
-docker run -p 8000:8000 --env-file .env future-designer-api
+apptainer run --nv \
+  --env MILVUS_URL="your_actual_milvus_endpoint" \
+  --env MILVUS_TOKEN="your_actual_milvus_token" \
+  --env MILVUS_COLLECTION_NAME="your_collection_name" \
+  future-designer-api.sif
 ```
