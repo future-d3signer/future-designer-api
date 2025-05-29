@@ -52,6 +52,7 @@ An AI-powered FastAPI service for furniture design and image processing, featuri
 3. **Install dependencies**
    ```bash
    pip install -r requirements.txt
+   pip install flash-attn==2.7.3
    ```
 
 4. **Install SAM2 outside repo directory**
