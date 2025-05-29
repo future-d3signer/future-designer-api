@@ -85,6 +85,9 @@ The API will be available at:
 Comprehensive documentation is available in Sphinx format:
 
 ```bash
+# Install documentation dependencies
+pip install sphinx sphinx-rtd-theme
+
 # Build documentation
 cd docs
 sphinx-build -b html source build
@@ -92,6 +95,18 @@ sphinx-build -b html source build
 # View documentation
 cd build && python -m http.server 8080
 # Open http://localhost:8080
+```
+## 🧪 Testing
+
+Run the test suite using pytest:
+
+```bash
+# Run all tests
+pytest
+
+# Run specific test file
+pytest tests/test_api/test_api_routers.py
+
 ```
 
 ## 🎯 API Endpoints

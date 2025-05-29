@@ -33,12 +33,12 @@ class ImageService:
     def generate_styled_image(self, style_key: str, depth_image_pil: Image.Image) -> str:
         prompts = self.model_provider.get_prompts()
         if style_key not in prompts:
-            raise ValueError(f"Invalid style: {style_key}")
+            custom_prompt = style_key
 
         pipeline_control, _ = self.model_provider.get_diffusion_pipelines()
         
         output = pipeline_control(
-            prompt=prompts[style_key],
+            prompt=prompts[style_key] if style_key in prompts else custom_prompt,
             negative_prompt=prompts["negative"],
             width=1024, height=1024,
             guidance_scale=1.5, num_inference_steps=7,
