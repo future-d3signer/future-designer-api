@@ -36,15 +36,21 @@ class ImageService:
             custom_prompt = style_key
 
         pipeline_control, _ = self.model_provider.get_diffusion_pipelines()
+        pipeline_control.set_ip_adapter_scale(0.6)  # Disable IP-Adapter scale for controlnet
         
         output = pipeline_control(
             prompt=prompts[style_key] if style_key in prompts else custom_prompt,
             negative_prompt=prompts["negative"],
-            width=1024, height=1024,
-            guidance_scale=1.5, num_inference_steps=7,
+            width=1024, 
+            height=1024,
+            guidance_scale=1.5, 
+            num_inference_steps=7,
             control_image=[depth_image_pil], 
-            controlnet_conditioning_scale=0.9, control_guidance_end=0.9,
-            control_mode=[1], generator=torch.Generator(device="cuda"), eta=0.3,
+            controlnet_conditioning_scale=0.9, 
+            control_guidance_end=0.9,
+            control_mode=[1], 
+            generator=torch.Generator(device="cuda"), 
+            eta=0.3,
             ip_adapter_image=self.model_provider.black_image,
         )
         generated_image_b64 = ImageUtils.encode_image(output.images[0])
@@ -55,9 +61,10 @@ class ImageService:
                          orginal_image_pil:Image.Image, mask_image_pil: Image.Image) -> str:
         full_prompt = f"{base_prompt}, {self.model_provider.enhancement_prompt}"
         
-        padded_mask = ImageUtils.add_mask_padding(mask_image_pil, padding=30)
+        padded_mask = ImageUtils.add_mask_padding(mask_image_pil, padding=10)
         
         _, pipeline_inpaint = self.model_provider.get_diffusion_pipelines()
+        pipeline_inpaint.set_ip_adapter_scale(0.0)  # Disable IP-Adapter scale for inpainting
         processor = IPAdapterMaskProcessor() 
         blured_image = processor.blur(padded_mask, blur_factor=15)
 
@@ -72,10 +79,10 @@ class ImageService:
             mask_image=blured_image, 
             num_inference_steps=5,
             control_image=[depth_image_pil],
-            guidance_scale=2.5,
+            guidance_scale=3.5,
             generator=torch.Generator(device="cuda").manual_seed(seed),
             controlnet_conditioning_scale=0.7,
-            control_guidance_end=0.7,
+            control_guidance_end=1.0,
             control_mode=[1],
             eta=0.3,
             strength=0.99,
@@ -110,6 +117,7 @@ class ImageService:
         generator = torch.Generator(device="cuda").manual_seed(torch.randint(0, 100000, (1,)).item())
         
         _, pipeline_inpaint = self.model_provider.get_diffusion_pipelines()
+        pipeline_inpaint.set_ip_adapter_scale(0.0)
 
         output = pipeline_inpaint(
             prompt=self.model_provider.enhancement_prompt,
@@ -151,6 +159,7 @@ class ImageService:
 
         negative_prompt = "deformed, low quality, blurry, noise, grainy, duplicate, watermark, text, out of frame"
         _, pipeline_inpaint = self.model_provider.get_diffusion_pipelines()
+        pipeline_inpaint.set_ip_adapter_scale(1.0)  # Enable IP-Adapter scale for inpainting
 
         output = pipeline_inpaint(
             prompt=full_prompt,
@@ -165,6 +174,7 @@ class ImageService:
             cross_attention_kwargs={"ip_adapter_masks": ip_masks},
             control_image=[result_image_for_control],
             controlnet_conditioning_scale=1.0,
+            control_guidance_end=1.0,
             eta=0.3,
             control_mode=[6] 
         )
@@ -266,14 +276,22 @@ class ImageService:
         negative_prompt = "unrealistic lighting, floating furniture, harsh edges, artificial shadows"
         
         _, pipeline_inpaint = self.model_provider.get_diffusion_pipelines()
+        pipeline_inpaint.set_ip_adapter_scale(1.0)
+
         output = pipeline_inpaint(
-            prompt=blend_prompt, negative_prompt=negative_prompt,
-            image=initial_composite, mask_image=padded_blend_mask,
-            num_inference_steps=7, guidance_scale=1.5,
-            control_image=[depth_pil], controlnet_conditioning_scale=0.7,
-            control_guidance_end=0.7, control_mode=[1],
+            prompt=blend_prompt, 
+            negative_prompt=negative_prompt,
+            image=initial_composite, 
+            mask_image=padded_blend_mask,
+            num_inference_steps=7, 
+            guidance_scale=1.5,
+            control_image=[depth_pil], 
+            controlnet_conditioning_scale=0.7,
+            control_guidance_end=0.7, 
+            control_mode=[1],
             generator=torch.Generator(device="cuda").manual_seed(torch.randint(0, 100000, (1,)).item()),
-            strength=0.99, eta=0.3,
+            strength=0.99, 
+            eta=0.3,
             ip_adapter_image=furniture_resized.convert("RGB"), 
         )
         result_img_pil = output.images[0]

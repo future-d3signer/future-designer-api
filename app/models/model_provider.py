@@ -75,7 +75,7 @@ class ModelProvider:
                     weight_name="ip-adapter_sdxl_vit-h.safetensors",
                     image_encoder_folder="models/image_encoder",
                 )
-            self._pipeline_inpaint.set_ip_adapter_scale(0.6)
+            self._pipeline_inpaint.set_ip_adapter_scale(1.0)
             self._pipeline_inpaint.scheduler = TCDScheduler.from_config(self._pipeline_inpaint.scheduler.config)
             self._pipeline_inpaint.load_lora_weights("h1t/TCD-SDXL-LoRA")
             self._pipeline_inpaint.fuse_lora()
