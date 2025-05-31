@@ -136,7 +136,7 @@ with open("room.jpg", "rb") as f:
     image_data = base64.b64encode(f.read()).decode()
 
 # Detect furniture
-response = requests.post("http://localhost:8000/caption", json={
+response = requests.post("http://localhost:8000/image-analysis/generate_captions", json={
     "source_image": image_data
 })
 
@@ -145,10 +145,14 @@ furniture = response.json()["furniture"]
 
 ### Style Transfer
 ```python
+# Encode depth image
+with open("room_depth.jpg", "rb") as f:
+    depth_image_data = base64.b64encode(f.read()).decode()
+
 # Apply modern style
-response = requests.post("http://localhost:8000/style", json={
-    "style_image": depth_image_b64,
-    "style": "modern" 
+response = requests.post("http://localhost:8000/image-generation/generate_style", json={
+    "style": "modern",
+    "depth_image_b64": depth_image_data 
 })
 
 styled_result = response.json()["generated_image"]
