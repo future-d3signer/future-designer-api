@@ -266,7 +266,7 @@ class ImageService:
         furniture_alpha_mask = furniture_resized.split()[3]
         blend_mask_pil.paste(furniture_alpha_mask, (position["x"], position["y"]))
         
-        padded_blend_mask = ImageUtils.add_mask_padding(blend_mask_pil, padding=64)
+        padded_blend_mask = ImageUtils.add_mask_padding(blend_mask_pil, padding=32)
 
         # Generate depth for the initial composite to guide blending
         depth_estimator = self.model_provider.get_depth_estimator()
@@ -276,7 +276,7 @@ class ImageService:
         negative_prompt = "unrealistic lighting, floating furniture, harsh edges, artificial shadows"
         
         _, pipeline_inpaint = self.model_provider.get_diffusion_pipelines()
-        pipeline_inpaint.set_ip_adapter_scale(1.0)
+        pipeline_inpaint.set_ip_adapter_scale(0.4)
 
         output = pipeline_inpaint(
             prompt=blend_prompt, 
@@ -284,7 +284,7 @@ class ImageService:
             image=initial_composite, 
             mask_image=padded_blend_mask,
             num_inference_steps=7, 
-            guidance_scale=1.5,
+            guidance_scale=2.5,
             control_image=[depth_pil], 
             controlnet_conditioning_scale=0.7,
             control_guidance_end=0.7, 
