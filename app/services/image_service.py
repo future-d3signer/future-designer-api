@@ -36,7 +36,7 @@ class ImageService:
             custom_prompt = style_key
 
         pipeline_control, _ = self.model_provider.get_diffusion_pipelines()
-        pipeline_control.set_ip_adapter_scale(0.6)  # Disable IP-Adapter scale for controlnet
+        pipeline_control.set_ip_adapter_scale(0.4)  # Disable IP-Adapter scale for controlnet
         
         output = pipeline_control(
             prompt=prompts[style_key] if style_key in prompts else custom_prompt,
@@ -61,8 +61,15 @@ class ImageService:
                          orginal_image_pil:Image.Image, mask_image_pil: Image.Image) -> str:
         full_prompt = f"{base_prompt}, {self.model_provider.enhancement_prompt}"
         
-        padded_mask = ImageUtils.add_mask_padding(mask_image_pil, padding=10)
-        
+        padded_mask = ImageUtils.add_mask_padding(mask_image_pil, padding=32)
+    
+        binary_mask_pil = mask_image_pil.point(lambda x: 0 if x > 127 else 255)
+        original_array = np.array(orginal_image_pil)
+        mask_array_for_zeroing = np.array(binary_mask_pil.convert("L")) == 0 # 0 is black (masked)
+        original_array_copy = original_array.copy()
+        original_array_copy[mask_array_for_zeroing] = [0, 0, 0] # Zero out masked area
+        result_image_for_control = Image.fromarray(original_array_copy)
+
         _, pipeline_inpaint = self.model_provider.get_diffusion_pipelines()
         pipeline_inpaint.set_ip_adapter_scale(0.0)  # Disable IP-Adapter scale for inpainting
         processor = IPAdapterMaskProcessor() 
@@ -75,14 +82,14 @@ class ImageService:
         output = pipeline_inpaint(
             prompt=full_prompt,
             negative_prompt=negative_prompt,
-            image=orginal_image_pil,
+            image=result_image_for_control,
             mask_image=blured_image, 
-            num_inference_steps=5,
+            num_inference_steps=7,
             control_image=[depth_image_pil],
             guidance_scale=3.5,
             generator=torch.Generator(device="cuda").manual_seed(seed),
             controlnet_conditioning_scale=0.7,
-            control_guidance_end=1.0,
+            control_guidance_end=0.7,
             control_mode=[1],
             eta=0.3,
             strength=0.99,
@@ -143,7 +150,7 @@ class ImageService:
         
         full_prompt = f"{style_prompt}, {self.model_provider.enhancement_prompt}"
 
-        padded_mask = ImageUtils.add_mask_padding(mask_image_pil, padding=30)
+        padded_mask = ImageUtils.add_mask_padding(mask_image_pil, padding=32)
 
         processor = IPAdapterMaskProcessor()
         ip_masks = processor.preprocess(padded_mask, height=1024, width=1024)
@@ -166,8 +173,8 @@ class ImageService:
             negative_prompt=negative_prompt,
             image=orginal_image_pil,
             mask_image=padded_mask,
-            num_inference_steps=5,
-            guidance_scale=2.0,
+            num_inference_steps=7,
+            guidance_scale=2.5,
             ip_adapter_image=load_adapter_image,
             generator=torch.Generator(device="cuda").manual_seed(torch.randint(0, 100000, (1,)).item()),
             strength=0.99,
